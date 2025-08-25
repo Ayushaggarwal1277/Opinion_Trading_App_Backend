@@ -10,7 +10,7 @@ A robust backend for a prediction market application where users can trade on va
 - **Market Lifecycle Management**: Automated market expiry and settlement
 - **Dynamic Pricing**: Price updates based on market activity
 - **Trade Refunds**: Automatic refunds for pending trades when markets expire
-- **Settlement Logic**: Winners receive 9x payout, losers get 1x commission
+- **Settlement Logic**: Winners receive 9 per share, losers get nothing, app commission is 1 per share
 
 ## 🛠️ Technologies Used
 
@@ -180,8 +180,9 @@ socket.on('userBalanceUpdate', (data) => {
 
 ### Market Settlement
 - Automated settlement based on real-world data (weather API)
-- Winners receive 9x their stake
-- Losers receive 1x stake as commission
+- Winners receive 9 per share
+- Losers receive nothing
+- App takes 1 per share as commission
 - Automatic refunds for unmatched trades
 
 ### Real-time Updates

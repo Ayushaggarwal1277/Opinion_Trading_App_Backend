@@ -184,8 +184,8 @@ cron.schedule("* * * * *", async () => {
           // Winner gets 9 per share
           payout = trade.executedAmount * 9;
         } else {
-          // Loser gets 1 per share as commission
-          payout = trade.executedAmount * 1;
+          // Loser gets nothing
+          payout = 0;
         }
 
         const oldBalance = trade.user.balance;
@@ -196,7 +196,7 @@ cron.schedule("* * * * *", async () => {
         emitUserBalanceUpdate(trade.user._id.toString(), {
           newBalance: trade.user.balance,
           change: payout,
-          reason: `Market settled - ${trade.option.toUpperCase() === result ? 'You won!' : 'Commission for losing trade'}`
+          reason: `Market settled - ${trade.option.toUpperCase() === result ? 'You won!' : 'You lost - no payout'}`
         });
 
         trade.status = "SETTLED";
