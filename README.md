@@ -4,8 +4,57 @@ A comprehensive real-time prediction market platform where users can trade on De
 
 ## 🚀 Features
 
-- **Real-time Trading**: WebSocket-powered live trading with ## 👥 Tea## 👥 Team
+- **Real-time Trading**: WebSocket-powered live trading with ## 👥 T## 📝 LicenseThis p## 📝 Lic3. Commit changes (`git commit -m 'Add AmazingFeature'`)
+4. Push to branch (`git push origin feature/AmazingFeature`)
+5. Open Pull Request
 
+## 📝 License
+
+This project is licensed under the MIT License.
+
+## 👥 Team
+
+**Ayush Aggarwal** and **Yamini** - Full-stack Opinion Trading Platform Team
+
+## 🙏 Acknowledgments
+
+- Weather data from Open-Meteo API
+- Real-time updates via Socket.IO
+- UI components with Tailwind CSS
+- Built for hackathon submission
+
+--- is licensed under the MIT License.
+
+## 👥 Team
+
+**Ayush Aggarwal** and **Yamini** - Full-stack Opinion Trading Platform Team
+
+## 🙏 Acknowledgments
+
+- Weather data from Open-Meteo API
+- Real-time updates via Socket.IO
+- UI components with Tailwind CSS
+- Built for hackathon submissionnsed under the MIT License.
+
+## 👥 Team
+
+**Ayush Aggarwal** and **Yamini** - Full-stack Opinion Trading Platform Team
+
+## 🙏 Acknowledgments
+
+- Weather data from Open-Meteo API
+- Real-time updates via Socket.IOoject is licensed under the MIT License.
+
+## 👥 Team
+
+**Ayush Aggarwal** and **Yamini** - Full-stack Opinion Trading Platform Team
+
+## 🙏 Acknowledgments
+
+- Weather data from Open-Meteo API
+- Real-time updates via Socket.IO
+- UI components with Tailwind CSS
+- Built for hackathon submission
 **Ayush Aggarwal** and **Yamini** - Full-stack Opinion Trading Platform Team
 
 ## 🙏 Acknowledgments**Ayush Aggarwal** & **Yamini** - Full-stack Opinion Trading Platform Team
@@ -285,7 +334,7 @@ This project is licensed under the MIT License.
 
 ## 👨‍� Author
 
-**Ashutosh Aggarwal** - Full-stack Opinion Trading Platform
+**Ayush Aggarwal** and **Yamini** - Full-stack Opinion Trading Platform Team
 
 ## 🙏 Acknowledgments
 
