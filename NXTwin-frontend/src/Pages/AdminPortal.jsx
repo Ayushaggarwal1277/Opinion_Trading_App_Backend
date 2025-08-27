@@ -26,28 +26,14 @@ const AdminPortal = () => {
     setMessage('');
 
     try {
-      // Convert expiry to proper IST date format
-      // When user selects datetime-local, it's in their local time (IST)
-      // We need to treat this as IST and convert properly to UTC for storage
-      const expiryDate = new Date(formData.expiry);
-      
-      // Add IST offset (+5:30) to get correct UTC time
-      // If user selects 4:00 PM IST, it should expire at 4:00 PM IST, not 4:00 PM UTC
-      const istOffset = 5.5 * 60 * 60 * 1000; // 5.5 hours in milliseconds
-      const correctedExpiryDate = new Date(expiryDate.getTime() + istOffset);
-      
+      // Store expiry as UTC - admin enters time in UTC
       const marketData = {
         question: formData.question,
-        expiry: correctedExpiryDate.toISOString(),
+        expiry: new Date(formData.expiry).toISOString(),
         threshold: parseFloat(formData.threshold)
       };
 
-      console.log('Creating market with expiry:', {
-        userInput: formData.expiry,
-        localDate: expiryDate.toString(),
-        correctedUTC: correctedExpiryDate.toISOString(),
-        willExpireAtIST: new Date(correctedExpiryDate.getTime() - istOffset).toString()
-      });
+      console.log('Creating market with expiry (UTC):', marketData.expiry);
 
       const response = await marketAPI.createMarket(marketData);
       
@@ -116,7 +102,7 @@ const AdminPortal = () => {
             {/* Expiry Date */}
             <div>
               <label htmlFor="expiry" className="block text-sm font-medium text-gray-300 mb-2">
-                Expiry Date & Time (IST)
+                Expiry Date & Time (UTC)
               </label>
               <input
                 type="datetime-local"
@@ -128,7 +114,7 @@ const AdminPortal = () => {
                 required
               />
               <p className="text-xs text-gray-400 mt-1">
-                Enter the time when you want the market to close in Indian Standard Time (IST)
+                Enter the time when you want the market to close in UTC
               </p>
             </div>
 

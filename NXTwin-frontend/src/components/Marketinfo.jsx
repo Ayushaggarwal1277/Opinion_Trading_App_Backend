@@ -12,8 +12,15 @@ export default function MarketInfo({ market, marketId }) {
     );
   }
 
-  // Format expiry date
-  const expiryDate = market.expiry ? new Date(market.expiry).toLocaleDateString() : "TBD";
+  // Format expiry date in UTC
+  const expiryDate = market.expiry ? new Date(market.expiry).toLocaleString('en-US', {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZoneName: 'short'
+  }) : "TBD";
 
   return (
     <div className="flex justify-between items-center bg-gradient-to-br from-[#181c24] to-[#1f2430] rounded-2xl p-8 mb-6 shadow-lg border border-[#23283a] transition hover:shadow-xl">

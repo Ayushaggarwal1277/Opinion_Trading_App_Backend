@@ -48,11 +48,10 @@ export default function QuickStats({ marketId, market }) {
     };
   }, [marketId]);
 
-  // Helper function to format date
+  // Helper function to format date in UTC
   const formatExpiryDate = (expiryDate) => {
     if (!expiryDate) return "N/A";
     return new Date(expiryDate).toLocaleDateString('en-US', {
-      timeZone: 'Asia/Kolkata',
       month: 'numeric',
       day: 'numeric',
       year: 'numeric'
@@ -76,7 +75,7 @@ export default function QuickStats({ marketId, market }) {
     return (market.totalVolume || market.volume || 0).toFixed(2);
   };
 
-  // Helper function to check if market is expired
+  // Helper function to check if market is expired - using UTC
   const isMarketExpired = (market) => {
     if (!market?.expiry) return false;
     return new Date(market.expiry) < new Date();
