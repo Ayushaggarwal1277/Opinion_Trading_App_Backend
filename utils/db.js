@@ -1,13 +1,22 @@
 import mongoose from "mongoose";
 
-const connectDB = async () =>{
+const connectDB = async () => {
     try {
+        // Use MONGODB_URI (Railway standard) or fall back to MONGO_URI
+        const mongoUri = process.env.MONGODB_URI || process.env.MONGO_URI;
         
-        await mongoose.connect(process.env.MONGO_URI);
-        console.log("MongoDB connected");
+        if (!mongoUri) {
+            throw new Error("MongoDB URI not found in environment variables");
+        }
+
+        await mongoose.connect(mongoUri, {
+            serverSelectionTimeoutMS: 30000, // 30 seconds
+            socketTimeoutMS: 45000, // 45 seconds
+        });
+        console.log("MongoDB connected successfully");
 
     } catch (error) {
-        console.log(error);
+        console.error("MongoDB connection error:", error.message);
         throw error;
     }
 }
