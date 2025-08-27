@@ -4,8 +4,9 @@
   "main": "server.js",
   "type": "module",
   "scripts": {
-    "start": "npm run dev",
-    "dev": "nodemon index.js"
+    "start": "node index.js",
+    "dev": "nodemon index.js",
+    "build": "echo 'No build step required'"
   },
   "dependencies": {
     "bcrypt": "^6.0.0",
