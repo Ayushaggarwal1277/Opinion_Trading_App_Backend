@@ -24,7 +24,7 @@ function AppContent() {
   }, []);
 
   return (
-    <Router>
+    <Router basename={import.meta.env.DEV ? '/' : '/Opinion_Trading_App_Backend'}>
       <div className="min-h-screen bg-[#10141c]">
         <Navbar />
         <Routes>
