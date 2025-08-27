@@ -12,5 +12,16 @@ export default defineConfig({
     outDir: 'dist',
     assetsDir: 'assets',
     assetsInlineLimit: 0, // Don't inline any assets including fonts
+    rollupOptions: {
+      output: {
+        assetFileNames: (assetInfo) => {
+          // Ensure fonts are not inlined
+          if (assetInfo.name && /\.(woff|woff2|eot|ttf|otf)$/.test(assetInfo.name)) {
+            return 'assets/fonts/[name].[hash][extname]';
+          }
+          return 'assets/[name].[hash][extname]';
+        }
+      }
+    }
   }
 });
