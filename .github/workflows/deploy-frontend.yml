@@ -35,6 +35,8 @@ jobs:
         working-directory: ./NXTwin-frontend
         run: |
           npm run build
+        env:
+          VITE_API_BASE_URL: https://opiniontradingappbackend-production.up.railway.app
 
       - name: Setup Pages
         uses: actions/configure-pages@v4
