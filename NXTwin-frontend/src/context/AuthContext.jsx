@@ -105,6 +105,18 @@ export function AuthProvider({ children }) {
           }
         }
 
+        // Check if we have stored user data from previous session
+        const storedUser = localStorage.getItem('user');
+        if (storedUser) {
+          try {
+            const userData = JSON.parse(storedUser);
+            console.log('🔍 Found stored user data, attempting token refresh...');
+          } catch (parseError) {
+            console.log('❌ Invalid stored user data, clearing...');
+            localStorage.removeItem('user');
+          }
+        }
+
         // Try to refresh token to check if user is logged in
         console.log('🔄 Attempting to refresh token...');
         await authAPI.refreshToken();

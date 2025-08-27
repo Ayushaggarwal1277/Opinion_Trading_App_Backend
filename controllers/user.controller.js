@@ -64,8 +64,8 @@ const registerUser = asyncHandler(async (req, res) => {
 
     const options = {
         httpOnly: true,
-        secure: false, // Set to true in production with HTTPS
-        sameSite: 'lax'
+        secure: process.env.NODE_ENV === 'production', // true in production for HTTPS
+        sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax' // 'none' for cross-origin in production
     }
 
     return res.status(201)
@@ -117,8 +117,8 @@ const loginUser = asyncHandler(async (req, res) => {
 
     const options = {
         httpOnly: true,
-        secure: false, // Set to true in production with HTTPS
-        sameSite: 'lax', // Allow cross-origin requests from frontend
+        secure: process.env.NODE_ENV === 'production', // true in production for HTTPS
+        sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax', // 'none' for cross-origin in production
         maxAge: 15 * 60 * 1000 // 15 minutes for access token
     }
 
@@ -196,8 +196,8 @@ const refreshToken = asyncHandler(async (req, res) => {
 
         const options = {
             httpOnly: true,
-            secure: false, // Set to true in production with HTTPS
-            sameSite: 'lax', // Allow cross-origin requests from frontend
+            secure: process.env.NODE_ENV === 'production', // true in production for HTTPS
+            sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax', // 'none' for cross-origin in production
             maxAge: 24 * 60 * 60 * 1000 // 24 hours for refresh token
         }
 
