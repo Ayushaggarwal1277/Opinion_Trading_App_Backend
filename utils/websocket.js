@@ -139,6 +139,58 @@ export const emitUserTradeRefunded = (userId, refundData) => {
   }
 };
 
+// Emit trade settlement result to user
+export const emitUserTradeSettled = (userId, settlementData) => {
+  if (io) {
+    io.to(`user-${userId}`).emit('user:tradeSettled', {
+      userId,
+      trade: settlementData.trade,
+      payout: settlementData.payout,
+      marketResult: settlementData.marketResult,
+      won: settlementData.won,
+      marketQuestion: settlementData.marketQuestion,
+      timestamp: new Date()
+    });
+    console.log(`Trade settlement notification sent to user ${userId}`);
+  }
+};
+
+// Emit market outcome notification to user
+export const emitMarketOutcomeNotification = (userId, outcomeData) => {
+  if (io) {
+    io.to(`user-${userId}`).emit('market:outcome', {
+      userId,
+      marketId: outcomeData.marketId,
+      marketQuestion: outcomeData.marketQuestion,
+      result: outcomeData.result,
+      threshold: outcomeData.threshold,
+      actualValue: outcomeData.actualValue,
+      userTrades: outcomeData.userTrades,
+      totalPayout: outcomeData.totalPayout,
+      timestamp: new Date()
+    });
+    console.log(`Market outcome notification sent to user ${userId}`);
+  }
+};
+
+// Emit detailed trade summary after market settlement
+export const emitUserTradeSummary = (userId, summaryData) => {
+  if (io) {
+    io.to(`user-${userId}`).emit('user:tradeSummary', {
+      userId,
+      marketId: summaryData.marketId,
+      marketQuestion: summaryData.marketQuestion,
+      totalInvested: summaryData.totalInvested,
+      totalPayout: summaryData.totalPayout,
+      netResult: summaryData.netResult,
+      trades: summaryData.trades,
+      marketResult: summaryData.marketResult,
+      timestamp: new Date()
+    });
+    console.log(`Trade summary notification sent to user ${userId}`);
+  }
+};
+
 // Broadcast to all connected users
 export const broadcastToAll = (event, data) => {
   if (io) {

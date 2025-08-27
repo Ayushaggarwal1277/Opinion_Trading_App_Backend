@@ -1,241 +1,290 @@
-# Opinion Trading App Backend
+# Opinion Trading App
 
-A robust backend for a prediction market application where users can trade on various market predictions with real-time updates and dynamic pricing mechanisms.
+A comprehensive real-time prediction market platform where users can trade on Delhi temperature outcomes with live weather tracking and admin management capabilities.
 
 ## 🚀 Features
 
-- **User Authentication**: Secure JWT-based authentication system
-- **Real-time Updates**: WebSocket integration for live market data
-- **Order Matching System**: Sophisticated trade execution with exact price matching
-- **Market Lifecycle Management**: Automated market expiry and settlement
-- **Dynamic Pricing**: Price updates based on market activity
-- **Trade Refunds**: Automatic refunds for pending trades when markets expire
-- **Settlement Logic**: Winners receive 9 per share, losers get nothing, app commission is 1 per share
+- **Real-time Trading**: WebSocket-powered live trading with instant updates
+- **JWT Authentication**: Secure login system with refresh token mechanism
+- **Admin Portal**: Dedicated admin interface for market creation and management
+- **Live Temperature Tracking**: Real-time Delhi weather display and threshold comparison
+- **Market Expiry Notifications**: Comprehensive notification system for trade outcomes
+- **IST Timezone Support**: All operations in Indian Standard Time
+- **Order Book System**: Live order matching with exact price execution
+- **Settlement Logic**: Automated payouts - winners get ₹9/share, app takes ₹1 commission
 
-## 🛠️ Technologies Used
+## 🛠️ Tech Stack
 
-- **Node.js** - Backend runtime environment
-- **Express.js** - Web application framework
-- **MongoDB** - NoSQL database for data persistence
-- **Mongoose** - MongoDB object modeling
-- **Socket.IO** - Real-time bidirectional event-based communication
-- **JWT (jsonwebtoken)** - Authentication tokens
-- **bcrypt** - Password hashing
-- **node-cron** - Task scheduling for market operations
-- **node-fetch** - HTTP client for external API calls
+- **Backend**: Node.js, Express, MongoDB, Socket.io, node-cron
+- **Frontend**: React, Vite, Tailwind CSS, WebSocket client
+- **Authentication**: JWT with HTTP-only refresh tokens
+- **Real-time**: WebSocket connections for live updates
+- **External APIs**: Open-Meteo weather API for Delhi temperature
+- **Database**: MongoDB with Mongoose ODM
 
-## 📋 Prerequisites
+## ⚙️ Environment Variables
 
-Before running this application, make sure you have the following installed:
-
-- Node.js (v14 or higher)
-- MongoDB (local installation or MongoDB Atlas)
-- npm or yarn package manager
-
-## 🔧 Installation
-
-1. **Clone the repository**
-   ```bash
-   git clone https://github.com/Ayushaggarwal1277/Opinion_Trading_App_Backend.git
-   cd Opinion_Trading_App_Backend
-   ```
-
-2. **Install dependencies**
-   ```bash
-   npm install
-   ```
-
-3. **Environment Setup**
-   Create a `.env` file in the root directory with the following variables:
-   ```env
-   PORT=5000
-   MONGODB_URI=mongodb://localhost:27017/opinion-trading
-   JWT_SECRET=your_jwt_secret_key
-   ```
-
-4. **Start the application**
-   ```bash
-   # Development mode
-   npm run dev
-   
-   # Production mode
-   npm start
-   ```
-
-## 📚 API Documentation
-
-### Authentication Endpoints
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/users/register` | Register a new user |
-| POST | `/api/users/login` | User login |
-| POST | `/api/users/logout` | User logout |
-
-### Market Endpoints
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/markets` | Create a new market |
-| GET | `/api/markets` | Get all active markets |
-| GET | `/api/markets/:id` | Get specific market details |
-
-### Trade Endpoints
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/trades` | Place a new trade |
-| GET | `/api/trades` | Get user's trade history |
-
-### Example API Calls
-
-**Create a Market:**
-```json
-POST /api/markets
-{
-  "question": "Will it rain tomorrow?",
-  "threshold": 30,
-  "expiry": "2025-08-26T15:00:00.000Z",
-  "yesPrice": 5,
-  "noPrice": 5
-}
+### Backend (.env)
+```env
+PORT=3000
+MONGODB_URI=your_mongodb_connection_string
+ACCESS_TOKEN_SECRET=your_access_token_secret
+ACCESS_TOKEN_EXPIRY=15m
+REFRESH_TOKEN_SECRET=your_refresh_token_secret
+REFRESH_TOKEN_EXPIRY=7d
+CORS_ORIGIN=http://localhost:5173
 ```
 
-**Place a Trade:**
-```json
-POST /api/trades
-{
-  "marketId": "60d5ec49f1b2c8b1f8e4e1a1",
-  "option": "yes",
-  "side": "buy",
-  "amount": 10,
-  "price": 6
-}
+### Frontend (.env)
+```env
+VITE_API_BASE_URL=http://localhost:3000
 ```
 
-## 🔄 Real-time Events (WebSocket)
+## 🏃‍♂️ Local Development
 
-The application uses Socket.IO for real-time communication:
+### Backend Setup
+```bash
+# Install dependencies
+npm install
 
-### Client Events to Listen For:
-
-- **`marketPriceUpdate`** - Market price changes
-- **`newTrade`** - New trade executed
-- **`userBalanceUpdate`** - User balance changes
-- **`marketExpired`** - Market expiration notification
-- **`marketSettled`** - Market settlement results
-- **`tradeRefunded`** - Trade refund notification
-
-### Example WebSocket Integration:
-
-```javascript
-import io from 'socket.io-client';
-
-const socket = io('http://localhost:5000');
-
-// Listen for market updates
-socket.on('marketPriceUpdate', (data) => {
-  console.log('Market Update:', data);
-});
-
-// Listen for balance updates
-socket.on('userBalanceUpdate', (data) => {
-  console.log('Balance Update:', data);
-});
+# Start development server
+npm run dev
 ```
+
+### Frontend Setup
+```bash
+# Navigate to frontend directory
+cd NXTwin-frontend
+
+# Install dependencies
+npm install
+
+# Start development server
+npm run dev
+```
+
+## 🚀 Deployment Guide
+
+### Frontend Deployment (GitHub Pages) - FREE
+1. **Repository Setup**
+   - Ensure your code is pushed to GitHub
+   - Go to your repository settings
+   - Navigate to Pages section
+   - Select "GitHub Actions" as source
+
+2. **Automatic Deployment**
+   - GitHub Actions workflow is already configured
+   - Automatically deploys on push to main branch
+   - Frontend will be available at: `https://yourusername.github.io/Opinion_Trading_App_Backend/`
+
+3. **Manual Deployment (Alternative)**
+   ```bash
+   cd NXTwin-frontend
+   npm run deploy
+   ```
+
+### Frontend Deployment (Vercel) - FREE
+1. **Connect Repository**
+   - Go to [Vercel](https://vercel.com) and sign up with GitHub
+   - Import your repository
+   - Select the `NXTwin-frontend` folder as root directory
+
+2. **Configure Build Settings**
+   - Framework Preset: Vite
+   - Build Command: `npm run build`
+   - Output Directory: `dist`
+   - Install Command: `npm install`
+
+3. **Environment Variables**
+   ```
+   VITE_API_BASE_URL=https://your-backend-url.railway.app
+   ```
+
+4. **Deploy**
+   - Click "Deploy" and your frontend will be live!
+
+### Backend Deployment (Railway) - FREE
+1. **Connect Repository**
+   - Go to [Railway](https://railway.app) and sign up with GitHub
+   - Create new project and connect your repository
+   - Select the root directory (not frontend folder)
+
+2. **Add Database**
+   - Add MongoDB database service in Railway
+   - Copy the MongoDB connection string
+
+3. **Environment Variables**
+   ```
+   PORT=3000
+   MONGODB_URI=mongodb://mongo:password@mongodb.railway.internal:27017
+   ACCESS_TOKEN_SECRET=your_secret_here
+   ACCESS_TOKEN_EXPIRY=15m
+   REFRESH_TOKEN_SECRET=your_refresh_secret_here
+   REFRESH_TOKEN_EXPIRY=7d
+   CORS_ORIGIN=https://your-frontend-url.vercel.app
+   ```
+
+4. **Deploy**
+   - Railway will automatically deploy your backend
+   - Update frontend environment with backend URL
+
+### Alternative Deployment Options
+- **Frontend**: Netlify, GitHub Pages, Surge.sh
+- **Backend**: Render, Heroku (paid), PlanetScale + Vercel Functions
+
+## 📋 API Endpoints
+
+### Authentication
+- `POST /users/register` - User registration
+- `POST /users/login` - User login  
+- `POST /users/logout` - User logout
+- `POST /users/refresh` - Refresh access token
+- `GET /users/me` - Get current user profile
+
+### Markets
+- `GET /market/active` - Get all active markets
+- `GET /market/:id` - Get specific market details
+- `POST /market/question` - Create new market (admin only)
+- `POST /market/:id/trades` - Place a trade
+- `GET /market/:id/orderbook` - Get market order book
+- `GET /market/:id/user-orders` - Get user's orders
+
+### Weather
+- `GET /weather/current` - Get current Delhi weather data
+
+## 🔄 WebSocket Events
+
+### Client Listening Events
+- `market:priceUpdate` - Real-time price changes
+- `market:newTrade` - New trade notifications  
+- `user:balanceUpdate` - User balance updates
+- `market:expired` - Market expiration alerts
+- `market:settled` - Settlement results
+- `trade:refunded` - Trade refund notifications
+- `notification:new` - New notification alerts
 
 ## 🏗️ Project Structure
 
 ```
-├── controllers/           # Route controllers
-│   ├── market.controller.js
-│   ├── trade.controller.js
-│   └── user.controller.js
-├── jobs/                 # Scheduled tasks
-│   └── marketScheduler.js
-├── middlewares/          # Custom middleware
-│   └── auth.middleware.js
-├── models/               # Database models
+├── controllers/              # API route controllers
+│   ├── market.controller.js  # Market operations
+│   ├── trade.controller.js   # Trading logic
+│   ├── user.controller.js    # User management
+│   └── weather.controller.js # Weather data
+├── jobs/
+│   └── marketScheduler.js    # Market expiry scheduler
+├── middlewares/
+│   └── auth.middleware.js    # JWT authentication
+├── models/                   # Database schemas
 │   ├── market.models.js
 │   ├── trade.models.js
 │   └── users.models.js
-├── routes/               # API routes
+├── routes/                   # API routes
 │   ├── market.routes.js
-│   └── user.routes.js
-├── utils/                # Utility functions
+│   ├── user.routes.js
+│   └── weather.routes.js
+├── utils/                    # Helper functions
 │   ├── asyncHandler.js
 │   ├── db.js
 │   └── websocket.js
-├── app.js               # Express app configuration
-├── index.js             # Application entry point
-└── package.json         # Dependencies and scripts
+├── NXTwin-frontend/          # React frontend
+│   ├── src/
+│   │   ├── components/       # Reusable components
+│   │   ├── context/          # React context
+│   │   ├── Pages/            # Main pages
+│   │   ├── services/         # API & WebSocket
+│   │   └── utils/            # Frontend utilities
+│   └── ...
+├── app.js                    # Express configuration
+└── index.js                 # Application entry point
 ```
 
-## 🎯 Key Features Explained
+## 🎯 Key Features
 
-### Order Matching System
-- Trades execute only at exact price matches
-- Buy/Sell side matching with complementary pricing
-- Pending orders wait for matching counterparts
+### Admin Portal
+- Market creation with IST timezone support
+- Market management and oversight
+- Admin-only access controls
 
-### Market Settlement
-- Automated settlement based on real-world data (weather API)
-- Winners receive 9 per share
-- Losers receive nothing
-- App takes 1 per share as commission
-- Automatic refunds for unmatched trades
+### Real-time Temperature Display
+- Live Delhi weather in navbar
+- Temperature vs threshold comparison
+- Auto-refreshing weather data
 
-### Real-time Updates
-- Live price updates as trades execute
-- Instant balance updates for users
-- Market status notifications
+### Notification System
+- Trade outcome notifications
+- Market settlement alerts
+- Real-time notification panel
+- Unread count indicators
+
+### Advanced Trading
+- Exact price matching system
+- Live order book display
+- Pending order management
+- Automatic settlement and payouts
+
+## 🧪 Testing the Application
+
+### Create Admin User (Postman)
+```json
+POST /users/register
+{
+  "username": "admin",
+  "email": "admin@example.com", 
+  "password": "password123",
+  "role": "admin"
+}
+```
+
+### Test Weather API
+```bash
+GET /weather/current
+```
+
+### Create Test Market
+```json
+POST /market/question
+{
+  "question": "Will Delhi temperature be above 25°C tomorrow?",
+  "threshold": 25,
+  "expiry": "2024-01-15T15:00:00.000Z"
+}
+```
 
 ## 🔐 Security Features
 
+- JWT access tokens (15 min expiry)
+- HTTP-only refresh tokens (7 day expiry)
 - Password hashing with bcrypt
-- JWT token-based authentication
+- Role-based access control
+- CORS protection
 - Input validation and sanitization
-- Protected routes with middleware
-
-## 📊 Market Mechanics
-
-1. **Initial State**: Markets start with yesPrice = 5, noPrice = 5
-2. **Trade Execution**: Orders match at exact prices only
-3. **Price Discovery**: Prices reflect market sentiment through trading
-4. **Settlement**: Based on external data sources (weather API)
-
-## 🚦 Getting Started with Testing
-
-Use Postman or any API client to test the endpoints:
-
-1. Register a user
-2. Login to get JWT token
-3. Create a market
-4. Place trades
-5. Monitor real-time updates via WebSocket
 
 ## 🤝 Contributing
 
 1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
+2. Create feature branch (`git checkout -b feature/AmazingFeature`)
+3. Commit changes (`git commit -m 'Add AmazingFeature'`)
+4. Push to branch (`git push origin feature/AmazingFeature`)
+5. Open Pull Request
 
 ## 📝 License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License.
 
-## 👥 Authors
+## 👨‍� Author
 
-- **Ayush Aggarwal** - [Ayushaggarwal1277](https://github.com/Ayushaggarwal1277)
+**Ashutosh Aggarwal** - Full-stack Opinion Trading Platform
 
 ## 🙏 Acknowledgments
 
-- Built for hackathon participation
-- Weather data powered by Open-Meteo API
-- Real-time communication via Socket.IO
+- Weather data from Open-Meteo API
+- Real-time updates via Socket.IO
+- UI components with Tailwind CSS
+- Built for hackathon submission
 
 ---
 
-⭐ Star this repository if you found it helpful!
+⭐ **Star this repository if you found it helpful!**
+
+🚀 **Ready for production deployment with Vercel + Railway!**

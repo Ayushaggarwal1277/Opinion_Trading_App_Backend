@@ -7,7 +7,10 @@ import {
     emitMarketSettled, 
     emitUserBalanceUpdate, 
     emitUserTradeRefunded,
-    emitMarketPriceUpdate 
+    emitMarketPriceUpdate,
+    emitUserTradeSettled,
+    emitMarketOutcomeNotification,
+    emitUserTradeSummary
 } from "../utils/websocket.js";
 
 // Check markets every minute - update amounts and expire when time reached
@@ -177,10 +180,15 @@ cron.schedule("* * * * *", async () => {
 
       // Process executed trades and calculate winnings
       const trades = await Trade.find({ market: market._id, status: "EXECUTED" }).populate('user');
+      
+      // Track user trade summaries
+      const userTradeSummaries = {};
+      
       for (let trade of trades) {
         let payout = 0;
+        const won = trade.option.toUpperCase() === result;
 
-        if (trade.option.toUpperCase() === result) {
+        if (won) {
           // Winner gets 9 per share
           payout = trade.executedAmount * 9;
         } else {
@@ -196,12 +204,78 @@ cron.schedule("* * * * *", async () => {
         emitUserBalanceUpdate(trade.user._id.toString(), {
           newBalance: trade.user.balance,
           change: payout,
-          reason: `Market settled - ${trade.option.toUpperCase() === result ? 'You won!' : 'You lost - no payout'}`
+          reason: `Market settled - ${won ? 'You won!' : 'You lost - no payout'}`
+        });
+
+        // Emit individual trade settlement notification
+        emitUserTradeSettled(trade.user._id.toString(), {
+          trade: {
+            _id: trade._id,
+            option: trade.option,
+            side: trade.side,
+            amount: trade.executedAmount,
+            price: trade.price,
+            marketId: market._id
+          },
+          payout: payout,
+          marketResult: result,
+          won: won,
+          marketQuestion: market.question
+        });
+
+        // Track user summary data
+        const userId = trade.user._id.toString();
+        if (!userTradeSummaries[userId]) {
+          userTradeSummaries[userId] = {
+            userId: userId,
+            marketId: market._id,
+            marketQuestion: market.question,
+            totalInvested: 0,
+            totalPayout: 0,
+            trades: [],
+            marketResult: result
+          };
+        }
+
+        const tradeInvestment = trade.side === "buy" ? 
+          trade.executedAmount * trade.price : 
+          trade.executedAmount * (10 - trade.price);
+
+        userTradeSummaries[userId].totalInvested += tradeInvestment;
+        userTradeSummaries[userId].totalPayout += payout;
+        userTradeSummaries[userId].trades.push({
+          _id: trade._id,
+          option: trade.option,
+          side: trade.side,
+          amount: trade.executedAmount,
+          price: trade.price,
+          invested: tradeInvestment,
+          payout: payout,
+          won: won
         });
 
         trade.status = "SETTLED";
         await trade.save();
       }
+
+      // Send trade summary notifications to each user
+      Object.values(userTradeSummaries).forEach(summary => {
+        summary.netResult = summary.totalPayout - summary.totalInvested;
+        
+        // Send comprehensive trade summary
+        emitUserTradeSummary(summary.userId, summary);
+        
+        // Send market outcome notification
+        emitMarketOutcomeNotification(summary.userId, {
+          marketId: market._id,
+          marketQuestion: market.question,
+          result: result,
+          threshold: market.threshold,
+          actualValue: temp,
+          userTrades: summary.trades,
+          totalPayout: summary.totalPayout
+        });
+      });
 
       // Handle pending trades - refund users
       const pendingTrades = await Trade.find({ market: market._id, status: "PENDING" }).populate('user');

@@ -1,32 +1,25 @@
 import asyncHandler from "../utils/asyncHandler.js";
 import { User } from "../models/users.models.js";
-import cookieParser from "cookie-parser";
+import jwt from "jsonwebtoken";
 
-
-const generateAccessandRefreshTokens = async (userid) => {
+// Generate access and refresh tokens
+const generateAccessandRefreshTokens = async (userId) => {
     try {
-        const user = await User.findById(userid);
-        if (!user) {
-            throw new Error("User not found");
-        }
-
+        const user = await User.findById(userId);
         const accessToken = user.generateAccessToken();
         const refreshToken = user.generateRefreshToken();
 
         user.refreshToken = refreshToken;
-        await user.save();
+        await user.save({ validateBeforeSave: false });
 
         return { accessToken, refreshToken };
-        
     } catch (error) {
-        throw error;
+        throw new Error("Something went wrong while generating refresh and access token");
     }
-}
-
-
+};
 
 const registerUser = asyncHandler(async (req, res) => {
-    const { name, email, password,role } = req.body;
+    const { name, email, password, role } = req.body;
 
     if (!name || !email || !password) {
         return res.status(400).json({
@@ -35,14 +28,11 @@ const registerUser = asyncHandler(async (req, res) => {
         })
     }
 
-
     const existedUser = await User.findOne({
         $or: [{ email }]
-
     })
 
-    if(existedUser)
-    {
+    if(existedUser) {
         return res.status(400).json({
             success: false,
             message: "User already exists"
@@ -55,21 +45,41 @@ const registerUser = asyncHandler(async (req, res) => {
         password
     });
 
-    if(role) user.role = role;
-    await user.save();
+    if(role) {
+        user.role = role;
+        await user.save();
+    }
 
-    const createdUser = await User.findById(user._id).select("-password -refreshToken -trades -refreshToken");
+    const createdUser = await User.findById(user._id).select("-password -refreshToken");
 
-    if(!createdUser)
-    {
+    if(!createdUser) {
         return res.status(500).json({
             success: false,
             message: "User creation failed"
         })
     }
 
-    return res.status(201).json({createdUser});
+    // Generate tokens and auto-login the user
+    const { accessToken, refreshToken } = await generateAccessandRefreshTokens(createdUser._id);
 
+    const options = {
+        httpOnly: true,
+        secure: false, // Set to true in production with HTTPS
+        sameSite: 'lax'
+    }
+
+    return res.status(201)
+        .cookie("accessToken", accessToken, options)
+        .cookie("refreshToken", refreshToken, options)
+        .json({
+            success: true,
+            message: "User registered successfully",
+            data: {
+                user: createdUser,
+                accessToken,
+                refreshToken
+            }
+        });
 });
 
 const loginUser = asyncHandler(async (req, res) => {
@@ -106,8 +116,10 @@ const loginUser = asyncHandler(async (req, res) => {
     const loggedInUser = await User.findById(user._id).select("-password -refreshToken -trades");
 
     const options = {
-        httpOnly : true,
-        secure : true
+        httpOnly: true,
+        secure: false, // Set to true in production with HTTPS
+        sameSite: 'lax', // Allow cross-origin requests from frontend
+        maxAge: 15 * 60 * 1000 // 15 minutes for access token
     }
 
     return res.status(200)
@@ -115,9 +127,12 @@ const loginUser = asyncHandler(async (req, res) => {
     .cookie("refreshToken", refreshToken, options)
     .json({
         success: true,
-        accessToken,
-        refreshToken,
-        user : loggedInUser
+        message: "User logged in successfully",
+        data: {
+            user: loggedInUser,
+            accessToken,
+            refreshToken
+        }
     })
 });
 
@@ -130,11 +145,12 @@ const logoutUser = asyncHandler(async(req, res) => {
         { 
             new: true 
         }
-    );
+    )
 
     const options = {
-        httpOnly : true,
-        secure : true
+        httpOnly: true,
+        secure: false,
+        sameSite: 'lax'
     }
 
     return res.status(200)
@@ -142,55 +158,90 @@ const logoutUser = asyncHandler(async(req, res) => {
     .clearCookie("refreshToken", options)
     .json({
         success: true,
-        message: "User logged out successfully"
-    });
-});
-
-const refreshToken = asyncHandler(async(req, res) => {
-    const token = req.cookies.refreshToken;
-
-    if(!token)
-    {
-        return res.status(401).json({
-            success: false,
-            message: "Unauthorized"
-        });
-    }
-
-    const decodedToken = jwt.verify(token, process.env.REFRESH_TOKEN_SECRET);
-
-    const user = await User.findById(decodedToken._id).select("-password -refreshToken -trades");
-
-    if(!user || user.refreshToken !== token)
-    {
-        return res.status(401).json({
-            success: false,
-            message: "Unauthorized"
-        });
-    }
-
-    const {accessToken, refreshToken} = await generateAccessandRefreshTokens(user._id);
-
-    const options = {
-        httpOnly : true,
-        secure : true
-    }
-
-    return res.status(200)
-    .cookie("accessToken", accessToken, options)
-    .cookie("refreshToken", refreshToken, options)
-    .json({
-        success: true,
-        accessToken,
-        refreshToken,
-        user
+        message: "User logged Out"
     })
 });
 
+const refreshToken = asyncHandler(async (req, res) => {
+    const incomingRefreshToken = req.cookies.refreshToken || req.body.refreshToken;
+
+    if (!incomingRefreshToken) {
+        return res.status(401).json({
+            success: false,
+            message: "Unauthorized request"
+        })
+    }
+
+    try {
+        const decodedToken = jwt.verify(
+            incomingRefreshToken,
+            process.env.REFRESH_TOKEN_SECRET
+        );
+
+        const user = await User.findById(decodedToken?._id);
+
+        if (!user) {
+            return res.status(401).json({
+                success: false,
+                message: "Invalid refresh token"
+            })
+        }
+
+        if (incomingRefreshToken !== user?.refreshToken) {
+            return res.status(401).json({
+                success: false,
+                message: "Refresh token is expired or used"
+            })
+        }
+
+        const options = {
+            httpOnly: true,
+            secure: false, // Set to true in production with HTTPS
+            sameSite: 'lax', // Allow cross-origin requests from frontend
+            maxAge: 24 * 60 * 60 * 1000 // 24 hours for refresh token
+        }
+
+        const { accessToken, refreshToken: newRefreshToken } = await generateAccessandRefreshTokens(user._id);
+
+        return res.status(200)
+        .cookie("accessToken", accessToken, options)
+        .cookie("refreshToken", newRefreshToken, options)
+        .json({
+            success: true,
+            accessToken,
+            refreshToken: newRefreshToken,
+            message: "Access token refreshed"
+        })
+
+    } catch (error) {
+        return res.status(401).json({
+            success: false,
+            message: error?.message || "Invalid refresh token"
+        })
+    }
+});
+
+const getCurrentUser = asyncHandler(async (req, res) => {
+    const user = req.user; // From auth middleware
+    
+    return res.status(200).json({
+        success: true,
+        data: {
+            user: {
+                _id: user._id,
+                name: user.name,
+                email: user.email,
+                balance: user.balance,
+                role: user.role
+            }
+        }
+    });
+});
 
 export {
     registerUser,
     loginUser,
     logoutUser,
-    refreshToken
-}
+    refreshToken,
+    getCurrentUser
+};

@@ -4,6 +4,7 @@ import cookieParser from "cookie-parser";
 import dotenv from "dotenv";
 import router from "./routes/user.routes.js";
 import marketRouter from "./routes/market.routes.js";
+import weatherRouter from "./routes/weather.routes.js";
 
 dotenv.config();
 
@@ -19,5 +20,8 @@ app.use("/users",router);
 
 // Add market
 app.use("/market", marketRouter);
+
+// Add weather
+app.use("/weather", weatherRouter);
 
 export default app;

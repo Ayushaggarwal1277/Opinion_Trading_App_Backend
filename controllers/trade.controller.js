@@ -9,6 +9,57 @@ import {
     emitUserTradeExecuted 
 } from "../utils/websocket.js";
 
+// Helper function to update market prices based on executed trades
+const updateMarketPrices = async (marketId) => {
+    const market = await Market.findById(marketId);
+    if (!market) return;
+
+    // Get all executed trades for this market
+    const executedTrades = await Trade.find({
+        market: marketId,
+        status: "EXECUTED"
+    });
+
+    let totalYesVolume = 0;
+    let totalYesValue = 0;
+    let totalNoVolume = 0;
+    let totalNoValue = 0;
+
+    // Calculate weighted average prices based on executed trades
+    executedTrades.forEach(trade => {
+        if (trade.option === "yes" && trade.side === "buy") {
+            totalYesVolume += trade.executedAmount;
+            totalYesValue += trade.executedAmount * trade.executePrice;
+        } else if (trade.option === "no" && trade.side === "buy") {
+            totalNoVolume += trade.executedAmount;
+            totalNoValue += trade.executedAmount * trade.executePrice;
+        }
+    });
+
+    // Update prices based on weighted average, default to 5 if no trades
+    if (totalYesVolume > 0) {
+        market.yesPrice = Math.max(0.5, Math.min(9.5, totalYesValue / totalYesVolume));
+    }
+    
+    if (totalNoVolume > 0) {
+        market.noPrice = Math.max(0.5, Math.min(9.5, totalNoValue / totalNoVolume));
+    }
+
+    // Ensure prices are complementary (sum to 10) based on the more active side
+    if (totalYesVolume > totalNoVolume && totalYesVolume > 0) {
+        market.noPrice = 10 - market.yesPrice;
+    } else if (totalNoVolume > totalYesVolume && totalNoVolume > 0) {
+        market.yesPrice = 10 - market.noPrice;
+    }
+
+    // Update total amounts
+    market.totalYesAmount = totalYesVolume;
+    market.totalNoAmount = totalNoVolume;
+
+    await market.save();
+    return market;
+};
+
 const executeTrade = async(marketId, newTrade) => {
     const market = await Market.findById(marketId);
     if(!market) return;
@@ -210,12 +261,16 @@ const executeTrade = async(marketId, newTrade) => {
         
         await market.save();
         
+        // Recalculate and update market prices after trade execution
+        await updateMarketPrices(marketId);
+        
         // Emit real-time price update
+        const updatedMarket = await Market.findById(marketId);
         emitMarketPriceUpdate(marketId, {
-            yesPrice: market.yesPrice,
-            noPrice: market.noPrice,
-            totalYesAmount: market.totalYesAmount,
-            totalNoAmount: market.totalNoAmount
+            yesPrice: updatedMarket.yesPrice,
+            noPrice: updatedMarket.noPrice,
+            totalYesAmount: updatedMarket.totalYesAmount,
+            totalNoAmount: updatedMarket.totalNoAmount
         });
         
         // Notify both users of trade execution
@@ -344,6 +399,15 @@ const createTrade = asyncHandler(async (req, res) => {
     // Try to execute the trade immediately
     await executeTrade(marketId, trade);
 
+    // Update market prices and emit updates
+    const updatedMarket = await updateMarketPrices(marketId);
+    emitMarketPriceUpdate(marketId, {
+        yesPrice: updatedMarket.yesPrice,
+        noPrice: updatedMarket.noPrice,
+        totalYesAmount: updatedMarket.totalYesAmount,
+        totalNoAmount: updatedMarket.totalNoAmount
+    });
+
     return res.status(201).json({
         success: true,
         message: "Trade created successfully",
@@ -360,6 +424,144 @@ const createTrade = asyncHandler(async (req, res) => {
 
 });
 
+const getOrderBook = asyncHandler(async (req, res) => {
+    const { marketId } = req.params;
+
+    try {
+        // Get all pending trades for this market
+        const pendingTrades = await Trade.find({
+            market: marketId,
+            status: "PENDING"
+        }).sort({ price: -1 }); // Sort by price descending
+
+        // Group trades by option and side
+        const yesOrders = pendingTrades
+            .filter(trade => trade.option === "yes" && trade.side === "buy")
+            .map(trade => ({
+                price: trade.price,
+                quantity: trade.amount,
+                id: trade._id
+            }));
+
+        const noOrders = pendingTrades
+            .filter(trade => trade.option === "no" && trade.side === "buy")
+            .map(trade => ({
+                price: trade.price,
+                quantity: trade.amount,
+                id: trade._id
+            }));
+
+        return res.status(200).json({
+            success: true,
+            data: {
+                yesOrders,
+                noOrders,
+                totalOrders: pendingTrades.length
+            }
+        });
+
+    } catch (error) {
+        return res.status(500).json({
+            success: false,
+            message: "Failed to fetch order book"
+        });
+    }
+});
+
+// Get user's orders for a specific market
+const getUserOrders = asyncHandler(async (req, res) => {
+    const user = req.user;
+    const { marketId } = req.params;
+
+    try {
+        // Get all trades by this user for this market
+        const userTrades = await Trade.find({
+            user: user._id,
+            market: marketId
+        }).populate('market', 'question yesPrice noPrice')
+          .sort({ createdAt: -1 });
+
+        const orders = userTrades.map(trade => ({
+            _id: trade._id,
+            option: trade.option,
+            side: trade.side,
+            amount: trade.amount,
+            price: trade.price,
+            status: trade.status,
+            executePrice: trade.executePrice,
+            executedAmount: trade.executedAmount,
+            createdAt: trade.createdAt,
+            market: trade.market
+        }));
+
+        return res.status(200).json({
+            success: true,
+            data: {
+                orders,
+                totalOrders: orders.length
+            }
+        });
+
+    } catch (error) {
+        return res.status(500).json({
+            success: false,
+            message: "Failed to fetch user orders"
+        });
+    }
+});
+
+// Get all user's orders across all markets
+const getAllUserOrders = asyncHandler(async (req, res) => {
+    const user = req.user;
+
+    try {
+        // Get all trades by this user
+        const userTrades = await Trade.find({
+            user: user._id
+        }).populate('market', 'question yesPrice noPrice status')
+          .sort({ createdAt: -1 });
+
+        const orders = userTrades.map(trade => ({
+            _id: trade._id,
+            option: trade.option,
+            side: trade.side,
+            amount: trade.amount,
+            price: trade.price,
+            status: trade.status,
+            executePrice: trade.executePrice,
+            executedAmount: trade.executedAmount,
+            createdAt: trade.createdAt,
+            market: trade.market
+        }));
+
+        // Group by status for easy filtering
+        const groupedOrders = {
+            pending: orders.filter(order => order.status === "PENDING"),
+            executed: orders.filter(order => order.status === "EXECUTED"),
+            cancelled: orders.filter(order => order.status === "CANCELLED"),
+            settled: orders.filter(order => order.status === "SETTLED")
+        };
+
+        return res.status(200).json({
+            success: true,
+            data: {
+                orders,
+                groupedOrders,
+                totalOrders: orders.length
+            }
+        });
+
+    } catch (error) {
+        return res.status(500).json({
+            success: false,
+            message: "Failed to fetch user orders"
+        });
+    }
+});
+
 export {
-    createTrade
+    createTrade,
+    getOrderBook,
+    getUserOrders,
+    getAllUserOrders
 };
