@@ -1,0 +1,2 @@
+/*
+  Content-Security-Policy: default-src 'self' https://opiniontradingappbackend-production.up.railway.app; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; font-src 'self' data: https:; img-src 'self' data: https:; connect-src 'self' https://opiniontradingappbackend-production.up.railway.app wss://opiniontradingappbackend-production.up.railway.app;

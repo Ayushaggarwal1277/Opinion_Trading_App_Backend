@@ -11,5 +11,6 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     assetsDir: 'assets',
+    assetsInlineLimit: 0, // Don't inline any assets including fonts
   }
 });
