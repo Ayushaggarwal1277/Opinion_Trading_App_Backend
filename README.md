@@ -4,9 +4,11 @@ A comprehensive real-time prediction market platform where users can trade on De
 
 ## 🚀 Features
 
-- **Real-time Trading**: WebSocket-powered live trading with ## 👥 Team
+- **Real-time Trading**: WebSocket-powered live trading with ## 👥 Tea## 👥 Team
 
-**Ashutosh Aggarwal** & **Yamini** - Full-stack Opinion Trading Platform Team
+**Ayush Aggarwal** and **Yamini** - Full-stack Opinion Trading Platform Team
+
+## 🙏 Acknowledgments**Ayush Aggarwal** & **Yamini** - Full-stack Opinion Trading Platform Team
 
 ## 🙏 Acknowledgments
 
