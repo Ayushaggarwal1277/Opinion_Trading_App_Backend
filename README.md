@@ -4,7 +4,16 @@ A comprehensive real-time prediction market platform where users can trade on De
 
 ## 🚀 Features
 
-- **Real-time Trading**: WebSocket-powered live trading with instant updates
+- **Real-time Trading**: WebSocket-powered live trading with ## 👥 Team
+
+**Ashutosh Aggarwal** & **Yamini** - Full-stack Opinion Trading Platform Team
+
+## 🙏 Acknowledgments
+
+- Weather data from Open-Meteo API
+- Real-time updates via Socket.IO
+- UI components with Tailwind CSS
+- Built for hackathon submissiondates
 - **JWT Authentication**: Secure login system with refresh token mechanism
 - **Admin Portal**: Dedicated admin interface for market creation and management
 - **Live Temperature Tracking**: Real-time Delhi weather display and threshold comparison
