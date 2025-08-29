@@ -9,6 +9,24 @@ import {
     emitUserTradeExecuted 
 } from "../utils/websocket.js";
 
+// Helper function to calculate platform profit potential
+const calculatePlatformProfit = (yesAmount, yesValue, noAmount, noValue) => {
+    const totalCollected = yesValue + noValue;
+    const maxPayoutIfYesWins = yesAmount * 10;
+    const maxPayoutIfNoWins = noAmount * 10;
+    const maximumPayout = Math.max(maxPayoutIfYesWins, maxPayoutIfNoWins);
+    const guaranteedProfit = totalCollected - maximumPayout;
+    
+    return {
+        totalCollected,
+        maxPayoutIfYesWins,
+        maxPayoutIfNoWins,
+        maximumPayout,
+        guaranteedProfit,
+        isProfitable: guaranteedProfit >= 0
+    };
+};
+
 // Helper function to update market prices based on executed trades
 const updateMarketPrices = async (marketId) => {
     const market = await Market.findById(marketId);
@@ -64,241 +82,112 @@ const executeTrade = async(marketId, newTrade) => {
     const market = await Market.findById(marketId);
     if(!market) return;
 
-    // Find matching trades for the new trade
-    let matchingTrades = [];
+    // **NEW SMART EXECUTION LOGIC**
+    // Platform acts as market maker - execute trades when profitable
     
-    if (newTrade.option === "yes") {
-        if (newTrade.side === "buy") {
-            // For YES BUY order, find:
-            // 1. YES SELL orders at EXACT same price
-            // 2. NO BUY orders where (newTrade.price + noTrade.price = 10)
-            matchingTrades = await Trade.find({
-                market: marketId,
-                status: "PENDING",
-                _id: { $ne: newTrade._id },
-                $or: [
-                    // YES sell orders at EXACT same price
-                    { 
-                        option: "yes", 
-                        side: "sell",
-                        price: newTrade.price
-                    },
-                    // NO buy orders where prices add up to EXACTLY 10
-                    { 
-                        option: "no", 
-                        side: "buy",
-                        price: 10 - newTrade.price
-                    }
-                ]
-            });
-        } else {
-            // For YES SELL order, find:
-            // 1. YES BUY orders at EXACT same price
-            // 2. NO SELL orders where (newTrade.price + noTrade.price = 10)
-            matchingTrades = await Trade.find({
-                market: marketId,
-                status: "PENDING",
-                _id: { $ne: newTrade._id },
-                $or: [
-                    // YES buy orders at EXACT same price
-                    { 
-                        option: "yes", 
-                        side: "buy",
-                        price: newTrade.price
-                    },
-                    // NO sell orders where prices add up to EXACTLY 10
-                    { 
-                        option: "no", 
-                        side: "sell",
-                        price: 10 - newTrade.price
-                    }
-                ]
-            });
-        }
-    } else {
-        // For NO orders
-        if (newTrade.side === "buy") {
-            // For NO BUY order, find:
-            // 1. NO SELL orders at EXACT same price
-            // 2. YES BUY orders where (newTrade.price + yesTrade.price = 10)
-            matchingTrades = await Trade.find({
-                market: marketId,
-                status: "PENDING", 
-                _id: { $ne: newTrade._id },
-                $or: [
-                    // NO sell orders at EXACT same price
-                    { 
-                        option: "no", 
-                        side: "sell",
-                        price: newTrade.price
-                    },
-                    // YES buy orders where prices add up to EXACTLY 10
-                    { 
-                        option: "yes", 
-                        side: "buy",
-                        price: 10 - newTrade.price
-                    }
-                ]
-            });
-        } else {
-            // For NO SELL order, find:
-            // 1. NO BUY orders at EXACT same price
-            // 2. YES SELL orders where (newTrade.price + yesTrade.price = 10)
-            matchingTrades = await Trade.find({
-                market: marketId,
-                status: "PENDING", 
-                _id: { $ne: newTrade._id },
-                $or: [
-                    // NO buy orders at EXACT same price
-                    { 
-                        option: "no", 
-                        side: "buy",
-                        price: newTrade.price
-                    },
-                    // YES sell orders where prices add up to EXACTLY 10
-                    { 
-                        option: "yes", 
-                        side: "sell",
-                        price: 10 - newTrade.price
-                    }
-                ]
-            });
-        }
-    }
+    // Get all pending trades for this market
+    const pendingTrades = await Trade.find({
+        market: marketId,
+        status: "PENDING"
+    });
 
-    // Execute matching trades
-    let remainingAmount = newTrade.amount;
-    
-    for (let matchingTrade of matchingTrades) {
-        if (remainingAmount <= 0) break;
-        
-        const executeAmount = Math.min(remainingAmount, matchingTrade.amount);
-        const executePrice = matchingTrade.price; // Take the existing order's price
-        
-        // Update both trades
-        if (executeAmount === matchingTrade.amount) {
-            // Fully execute the matching trade
-            matchingTrade.status = "EXECUTED";
-            matchingTrade.executePrice = executePrice;
-            matchingTrade.executedAmount = executeAmount;
-            await matchingTrade.save();
+    // Calculate total amounts for YES and NO
+    let totalYesAmount = 0;
+    let totalYesValue = 0;
+    let totalNoAmount = 0;
+    let totalNoValue = 0;
+
+    // Include the new trade in calculations
+    const allTrades = [...pendingTrades, newTrade];
+
+    allTrades.forEach(trade => {
+        if (trade.option === "yes") {
+            totalYesAmount += trade.amount;
+            totalYesValue += trade.amount * trade.price;
         } else {
-            // Partially execute the matching trade - split it
-            matchingTrade.amount -= executeAmount;
-            await matchingTrade.save();
-            
-            // Create executed portion
-            const executedPortion = await Trade.create({
-                user: matchingTrade.user,
-                market: marketId,
-                amount: executeAmount,
-                option: matchingTrade.option,
-                side: matchingTrade.side,
-                price: matchingTrade.price,
-                status: "EXECUTED",
-                executePrice: executePrice,
-                executedAmount: executeAmount
-            });
+            totalNoAmount += trade.amount;
+            totalNoValue += trade.amount * trade.price;
         }
+    });
+
+    // Calculate what platform collects vs what it might pay out
+    const totalCollected = totalYesValue + totalNoValue;
+    const maxPayoutIfYesWins = totalYesAmount * 10; // If YES wins, pay ₹10 per YES share
+    const maxPayoutIfNoWins = totalNoAmount * 10;   // If NO wins, pay ₹10 per NO share
+    const maximumPayout = Math.max(maxPayoutIfYesWins, maxPayoutIfNoWins);
+
+    console.log(`💰 Trade Analysis:
+        Total Collected: ₹${totalCollected}
+        Max Payout (YES wins): ₹${maxPayoutIfYesWins}
+        Max Payout (NO wins): ₹${maxPayoutIfNoWins}
+        Maximum Payout: ₹${maximumPayout}
+        Profit: ₹${totalCollected - maximumPayout}`);
+
+    // **EXECUTE IF PROFITABLE** - Platform guarantees profit
+    if (totalCollected >= maximumPayout) {
+        console.log("🚀 EXECUTING ALL TRADES - Platform guaranteed profit!");
         
-        // Update new trade
-        if (executeAmount === remainingAmount) {
-            // Fully execute the new trade
-            newTrade.status = "EXECUTED";
-            newTrade.executePrice = executePrice;
-            newTrade.executedAmount = executeAmount;
-            await newTrade.save();
-        } else {
-            // Partially execute the new trade
-            newTrade.amount -= executeAmount;
-            await newTrade.save();
-            
-            // Create executed portion
-            const executedPortion = await Trade.create({
-                user: newTrade.user,
-                market: marketId,
-                amount: executeAmount,
-                option: newTrade.option,
-                side: newTrade.side,
-                price: newTrade.price,
-                status: "EXECUTED",
-                executePrice: executePrice,
-                executedAmount: executeAmount
-            });
-            
-            // Notify user of partial execution
-            emitUserTradeExecuted(newTrade.user.toString(), {
-                _id: executedPortion._id,
-                option: executedPortion.option,
-                amount: executeAmount,
-                price: executedPortion.price,
-                executePrice: executePrice,
-                status: "EXECUTED",
-                marketId: marketId
-            });
-        }
-        
-        remainingAmount -= executeAmount;
-        
-        // Update market prices based on executed trades
-        if (newTrade.option === "yes") {
-            if (market.totalYesAmount === 0) {
-                market.yesPrice = executePrice;
-            } else {
-                market.yesPrice = ((market.yesPrice * market.totalYesAmount) + (executePrice * executeAmount)) / (market.totalYesAmount + executeAmount);
+        // Execute ALL pending trades (including new one)
+        for (let trade of allTrades) {
+            if (trade.status === "PENDING") {
+                trade.status = "EXECUTED";
+                trade.executePrice = trade.price;
+                trade.executedAmount = trade.amount;
+                await trade.save();
+
+                // Notify user of execution
+                emitUserTradeExecuted(trade.user.toString(), {
+                    _id: trade._id,
+                    option: trade.option,
+                    amount: trade.amount,
+                    price: trade.price,
+                    executePrice: trade.price,
+                    status: "EXECUTED",
+                    marketId: marketId
+                });
             }
-            market.totalYesAmount += executeAmount;
-            market.noPrice = 10 - market.yesPrice;
-        } else {
-            if (market.totalNoAmount === 0) {
-                market.noPrice = executePrice;
-            } else {
-                market.noPrice = ((market.noPrice * market.totalNoAmount) + (executePrice * executeAmount)) / (market.totalNoAmount + executeAmount);
-            }
-            market.totalNoAmount += executeAmount;
-            market.yesPrice = 10 - market.noPrice;
         }
+
+        // Update market prices based on executed volume
+        const avgYesPrice = totalYesAmount > 0 ? totalYesValue / totalYesAmount : 5;
+        const avgNoPrice = totalNoAmount > 0 ? totalNoValue / totalNoAmount : 5;
+
+        market.yesPrice = Math.max(0.5, Math.min(9.5, avgYesPrice));
+        market.noPrice = Math.max(0.5, Math.min(9.5, avgNoPrice));
         
+        // Ensure prices make sense (optional - keep them independent for market maker model)
+        market.totalYesAmount = (market.totalYesAmount || 0) + totalYesAmount;
+        market.totalNoAmount = (market.totalNoAmount || 0) + totalNoAmount;
+
         await market.save();
-        
-        // Recalculate and update market prices after trade execution
-        await updateMarketPrices(marketId);
-        
-        // Emit real-time price update
-        const updatedMarket = await Market.findById(marketId);
+
+        // Emit market update
         emitMarketPriceUpdate(marketId, {
-            yesPrice: updatedMarket.yesPrice,
-            noPrice: updatedMarket.noPrice,
-            totalYesAmount: updatedMarket.totalYesAmount,
-            totalNoAmount: updatedMarket.totalNoAmount
+            yesPrice: market.yesPrice,
+            noPrice: market.noPrice,
+            totalYesAmount: market.totalYesAmount,
+            totalNoAmount: market.totalNoAmount,
+            executed: true,
+            profit: totalCollected - maximumPayout
         });
+
+        return true; // Indicate trades were executed
+    } else {
+        console.log(`⏳ TRADES PENDING - Need ₹${maximumPayout - totalCollected} more to guarantee profit`);
         
-        // Notify both users of trade execution
-        const matchingUser = await User.findById(matchingTrade.user);
-        if (matchingUser) {
-            emitUserTradeExecuted(matchingTrade.user.toString(), {
-                _id: matchingTrade._id,
-                option: matchingTrade.option,
-                amount: executeAmount,
-                price: matchingTrade.price,
-                executePrice: executePrice,
-                status: "EXECUTED",
-                marketId: marketId
-            });
-        }
-    }
-    
-    // If new trade was fully executed, notify user
-    if (newTrade.status === "EXECUTED") {
-        emitUserTradeExecuted(newTrade.user.toString(), {
+        // Emit new trade to order book but don't execute yet
+        emitNewTrade(marketId, {
             _id: newTrade._id,
             option: newTrade.option,
-            amount: newTrade.executedAmount || newTrade.amount,
+            side: newTrade.side,
+            amount: newTrade.amount,
             price: newTrade.price,
-            executePrice: newTrade.executePrice,
-            status: "EXECUTED",
-            marketId: marketId
+            status: "PENDING",
+            user: newTrade.user,
+            timestamp: newTrade.createdAt
         });
+
+        return false; // Indicate trades are still pending
     }
 };
 
@@ -384,22 +273,24 @@ const createTrade = asyncHandler(async (req, res) => {
         });
     }
 
-    // Emit new trade notification to market
-    emitNewTrade(marketId, {
-        _id: trade._id,
-        option,
-        side,
-        amount,
-        price,
-        status: trade.status,
-        user: user._id,
-        timestamp: trade.createdAt
-    });
+    // Try to execute the trade immediately with new smart logic
+    const wasExecuted = await executeTrade(marketId, trade);
 
-    // Try to execute the trade immediately
-    await executeTrade(marketId, trade);
+    // Only emit new trade if it wasn't executed (still pending)
+    if (!wasExecuted) {
+        emitNewTrade(marketId, {
+            _id: trade._id,
+            option,
+            side,
+            amount,
+            price,
+            status: trade.status,
+            user: user._id,
+            timestamp: trade.createdAt
+        });
+    }
 
-    // Update market prices and emit updates
+    // Update market prices and emit updates (this might be handled inside executeTrade now)
     const updatedMarket = await updateMarketPrices(marketId);
     emitMarketPriceUpdate(marketId, {
         yesPrice: updatedMarket.yesPrice,
