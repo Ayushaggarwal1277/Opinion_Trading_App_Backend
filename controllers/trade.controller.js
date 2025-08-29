@@ -249,7 +249,7 @@ const executeTrade = async(marketId, newTrade) => {
 
         return wasNewTradeExecuted; // Return whether new trade was executed
     } else {
-        console.log(`⏳ TRADES PENDING - Need ₹${maximumPayout - totalCollected} more to guarantee profit`);
+        console.log(`⏳ NO PROFITABLE PAIRS FOUND - All trades remain pending`);
         
         // Emit new trade to order book but don't execute yet
         emitNewTrade(marketId, {
