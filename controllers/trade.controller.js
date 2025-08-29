@@ -96,7 +96,7 @@ const executeTrade = async(marketId, newTrade) => {
     
     // Get all pending trades and separate by option
     const allTrades = [...pendingTrades, newTrade];
-    const yesTrades = allTrades.filter(t => t.option === "yes").sort((a, b) => b.price - a.price);
+    const yesTrades = allTrades.filter(t => t.option === "yes").sort((a, b) => b.price - a.price); // Sorting YES trades by price (high to low)
     const noTrades = allTrades.filter(t => t.option === "no").sort((a, b) => b.price - a.price);
 
     console.log(`📊 Available trades:
@@ -128,8 +128,8 @@ const executeTrade = async(marketId, newTrade) => {
             
             console.log(`🔍 Pair check: YES ₹${yTrade.price} + NO ₹${nTrade.price} = ₹${collected} collected, payout ₹${maxPayout}, profit ₹${profit}`);
             
-            if (profit > 0) {
-                // This pair is profitable - add to execution list
+            if (profit >= 0) {
+                // This pair is profitable or break-even (no loss) - execute it
                 tradesToExecute.push(yTrade, nTrade);
                 totalProfit += profit;
                 
@@ -137,7 +137,7 @@ const executeTrade = async(marketId, newTrade) => {
                 availableYes[i] = null;
                 availableNo[j] = null;
                 
-                console.log(`✅ Profitable pair found! Adding ₹${profit} profit`);
+                console.log(`✅ Executing pair! Profit/Break-even: ₹${profit}`);
                 break; // Move to next YES trade
             }
         }
@@ -178,15 +178,39 @@ const executeTrade = async(marketId, newTrade) => {
             });
         }
 
-        // Update market prices based on executed volume
-        if (executedYesAmount > 0) {
+        // Update market prices based on executed volume - MAKE THEM COMPLEMENTARY
+        if (executedYesAmount > 0 && executedNoAmount > 0) {
+            // Both YES and NO trades executed - calculate based on weighted average
+            const avgYesPrice = executedYesValue / executedYesAmount;
+            const avgNoPrice = executedNoValue / executedNoAmount;
+            
+            // Use the price with higher volume as the primary price
+            if (executedYesAmount >= executedNoAmount) {
+                // More YES volume - set YES price, make NO complementary
+                market.yesPrice = Math.max(0.5, Math.min(9.5, avgYesPrice));
+                market.noPrice = 10 - market.yesPrice;
+            } else {
+                // More NO volume - set NO price, make YES complementary  
+                market.noPrice = Math.max(0.5, Math.min(9.5, avgNoPrice));
+                market.yesPrice = 10 - market.noPrice;
+            }
+        } else if (executedYesAmount > 0) {
+            // Only YES trades executed
             const avgYesPrice = executedYesValue / executedYesAmount;
             market.yesPrice = Math.max(0.5, Math.min(9.5, avgYesPrice));
-        }
-        
-        if (executedNoAmount > 0) {
+            market.noPrice = 10 - market.yesPrice;
+        } else if (executedNoAmount > 0) {
+            // Only NO trades executed
             const avgNoPrice = executedNoValue / executedNoAmount;
             market.noPrice = Math.max(0.5, Math.min(9.5, avgNoPrice));
+            market.yesPrice = 10 - market.noPrice;
+        }
+        
+        // Ensure prices are always complementary and within bounds
+        if (market.yesPrice + market.noPrice !== 10) {
+            const total = market.yesPrice + market.noPrice;
+            market.yesPrice = (market.yesPrice / total) * 10;
+            market.noPrice = 10 - market.yesPrice;
         }
         
         // Update total amounts
