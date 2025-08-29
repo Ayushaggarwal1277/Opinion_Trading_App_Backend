@@ -91,73 +91,107 @@ const executeTrade = async(marketId, newTrade) => {
         status: "PENDING"
     });
 
-    // Calculate total amounts for YES and NO
-    let totalYesAmount = 0;
-    let totalYesValue = 0;
-    let totalNoAmount = 0;
-    let totalNoValue = 0;
-
-    // Include the new trade in calculations
+    // **SMART PAIR-WISE EXECUTION** - Execute profitable combinations immediately
+    // Your scenario: YES ₹9 + NO ₹9 should execute (₹8 profit), YES ₹2 stays pending
+    
+    // Get all pending trades and separate by option
     const allTrades = [...pendingTrades, newTrade];
+    const yesTrades = allTrades.filter(t => t.option === "yes").sort((a, b) => b.price - a.price);
+    const noTrades = allTrades.filter(t => t.option === "no").sort((a, b) => b.price - a.price);
 
-    allTrades.forEach(trade => {
-        if (trade.option === "yes") {
-            totalYesAmount += trade.amount;
-            totalYesValue += trade.amount * trade.price;
-        } else {
-            totalNoAmount += trade.amount;
-            totalNoValue += trade.amount * trade.price;
-        }
-    });
+    console.log(`📊 Available trades:
+        YES: ${yesTrades.map(t => `₹${t.price}`).join(', ')}
+        NO: ${noTrades.map(t => `₹${t.price}`).join(', ')}`);
 
-    // Calculate what platform collects vs what it might pay out
-    const totalCollected = totalYesValue + totalNoValue;
-    const maxPayoutIfYesWins = totalYesAmount * 10; // If YES wins, pay ₹10 per YES share
-    const maxPayoutIfNoWins = totalNoAmount * 10;   // If NO wins, pay ₹10 per NO share
-    const maximumPayout = Math.max(maxPayoutIfYesWins, maxPayoutIfNoWins);
+    // Find and execute profitable pairs
+    let tradesToExecute = [];
+    let totalProfit = 0;
+    
+    // Create a copy to track available trades
+    let availableYes = [...yesTrades];
+    let availableNo = [...noTrades];
 
-    console.log(`💰 Trade Analysis:
-        Total Collected: ₹${totalCollected}
-        Max Payout (YES wins): ₹${maxPayoutIfYesWins}
-        Max Payout (NO wins): ₹${maxPayoutIfNoWins}
-        Maximum Payout: ₹${maximumPayout}
-        Profit: ₹${totalCollected - maximumPayout}`);
-
-    // **EXECUTE IF PROFITABLE** - Platform guarantees profit
-    if (totalCollected >= maximumPayout) {
-        console.log("🚀 EXECUTING ALL TRADES - Platform guaranteed profit!");
+    // Try to match YES and NO trades for profit
+    for (let i = 0; i < availableYes.length; i++) {
+        const yTrade = availableYes[i];
+        if (!yTrade) continue; // Already used
         
-        // Execute ALL pending trades (including new one)
-        for (let trade of allTrades) {
-            if (trade.status === "PENDING") {
-                trade.status = "EXECUTED";
-                trade.executePrice = trade.price;
-                trade.executedAmount = trade.amount;
-                await trade.save();
-
-                // Notify user of execution
-                emitUserTradeExecuted(trade.user.toString(), {
-                    _id: trade._id,
-                    option: trade.option,
-                    amount: trade.amount,
-                    price: trade.price,
-                    executePrice: trade.price,
-                    status: "EXECUTED",
-                    marketId: marketId
-                });
+        for (let j = 0; j < availableNo.length; j++) {
+            const nTrade = availableNo[j];
+            if (!nTrade) continue; // Already used
+            
+            // Calculate profit for this pair (assuming equal amounts for simplicity)
+            const minAmount = Math.min(yTrade.amount, nTrade.amount);
+            const collected = (minAmount * yTrade.price) + (minAmount * nTrade.price);
+            const maxPayout = minAmount * 10; // Winner gets ₹10 per share
+            const profit = collected - maxPayout;
+            
+            console.log(`🔍 Pair check: YES ₹${yTrade.price} + NO ₹${nTrade.price} = ₹${collected} collected, payout ₹${maxPayout}, profit ₹${profit}`);
+            
+            if (profit > 0) {
+                // This pair is profitable - add to execution list
+                tradesToExecute.push(yTrade, nTrade);
+                totalProfit += profit;
+                
+                // Mark as used
+                availableYes[i] = null;
+                availableNo[j] = null;
+                
+                console.log(`✅ Profitable pair found! Adding ₹${profit} profit`);
+                break; // Move to next YES trade
             }
+        }
+    }
+
+    // Execute profitable pairs immediately
+    if (tradesToExecute.length > 0) {
+        console.log(`🚀 EXECUTING ${tradesToExecute.length} TRADES with total profit ₹${totalProfit}!`);
+        
+        let executedYesAmount = 0;
+        let executedNoAmount = 0;
+        let executedYesValue = 0;
+        let executedNoValue = 0;
+        
+        for (let trade of tradesToExecute) {
+            trade.status = "EXECUTED";
+            trade.executePrice = trade.price;
+            trade.executedAmount = trade.amount;
+            await trade.save();
+
+            if (trade.option === "yes") {
+                executedYesAmount += trade.amount;
+                executedYesValue += trade.amount * trade.price;
+            } else {
+                executedNoAmount += trade.amount;
+                executedNoValue += trade.amount * trade.price;
+            }
+
+            // Notify user of execution
+            emitUserTradeExecuted(trade.user.toString(), {
+                _id: trade._id,
+                option: trade.option,
+                amount: trade.amount,
+                price: trade.price,
+                executePrice: trade.price,
+                status: "EXECUTED",
+                marketId: marketId
+            });
         }
 
         // Update market prices based on executed volume
-        const avgYesPrice = totalYesAmount > 0 ? totalYesValue / totalYesAmount : 5;
-        const avgNoPrice = totalNoAmount > 0 ? totalNoValue / totalNoAmount : 5;
-
-        market.yesPrice = Math.max(0.5, Math.min(9.5, avgYesPrice));
-        market.noPrice = Math.max(0.5, Math.min(9.5, avgNoPrice));
+        if (executedYesAmount > 0) {
+            const avgYesPrice = executedYesValue / executedYesAmount;
+            market.yesPrice = Math.max(0.5, Math.min(9.5, avgYesPrice));
+        }
         
-        // Ensure prices make sense (optional - keep them independent for market maker model)
-        market.totalYesAmount = (market.totalYesAmount || 0) + totalYesAmount;
-        market.totalNoAmount = (market.totalNoAmount || 0) + totalNoAmount;
+        if (executedNoAmount > 0) {
+            const avgNoPrice = executedNoValue / executedNoAmount;
+            market.noPrice = Math.max(0.5, Math.min(9.5, avgNoPrice));
+        }
+        
+        // Update total amounts
+        market.totalYesAmount = (market.totalYesAmount || 0) + executedYesAmount;
+        market.totalNoAmount = (market.totalNoAmount || 0) + executedNoAmount;
 
         await market.save();
 
@@ -168,10 +202,28 @@ const executeTrade = async(marketId, newTrade) => {
             totalYesAmount: market.totalYesAmount,
             totalNoAmount: market.totalNoAmount,
             executed: true,
-            profit: totalCollected - maximumPayout
+            profit: totalProfit,
+            executedPairs: tradesToExecute.length / 2
         });
 
-        return true; // Indicate trades were executed
+        // Check if new trade was executed or still pending
+        const wasNewTradeExecuted = tradesToExecute.some(t => t._id.toString() === newTrade._id.toString());
+        
+        if (!wasNewTradeExecuted) {
+            // New trade wasn't part of profitable pairs, emit as pending
+            emitNewTrade(marketId, {
+                _id: newTrade._id,
+                option: newTrade.option,
+                side: newTrade.side,
+                amount: newTrade.amount,
+                price: newTrade.price,
+                status: "PENDING",
+                user: newTrade.user,
+                timestamp: newTrade.createdAt
+            });
+        }
+
+        return wasNewTradeExecuted; // Return whether new trade was executed
     } else {
         console.log(`⏳ TRADES PENDING - Need ₹${maximumPayout - totalCollected} more to guarantee profit`);
         

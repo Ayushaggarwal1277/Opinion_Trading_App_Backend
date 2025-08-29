@@ -289,9 +289,9 @@ npm run dev
 ```json
 POST /users/register
 {
-  "username": "admin",
-  "email": "admin@example.com", 
-  "password": "password123",
+  "username": "your_admin_username",
+  "email": "admin@yourdomain.com", 
+  "password": "your_secure_password",
   "role": "admin"
 }
 ```
