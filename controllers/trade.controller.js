@@ -301,8 +301,178 @@ const executeTrade = async(marketId, newTrade) => {
         }
 
         return true; // Some executions happened
+    } 
+    
+    // **COMPREHENSIVE PLATFORM EXPOSURE CHECK**
+    // If no direct pairs found, check if new trade can execute without platform loss
+    console.log(`🔍 No direct pairs found. Checking comprehensive platform exposure...`);
+    
+    // Calculate current platform position from all executed trades
+    let currentYesShares = 0;
+    let currentYesValue = 0;
+    let currentNoShares = 0;
+    let currentNoValue = 0;
+
+    executedTrades.forEach(trade => {
+        const tradeAmount = trade.executedAmount || trade.amount;
+        if (trade.option === "yes") {
+            currentYesShares += tradeAmount;
+            currentYesValue += tradeAmount * trade.executePrice;
+        } else {
+            currentNoShares += tradeAmount;
+            currentNoValue += tradeAmount * trade.executePrice;
+        }
+    });
+
+    // Add all pending trades to potential position
+    let potentialYesShares = currentYesShares;
+    let potentialYesValue = currentYesValue;
+    let potentialNoShares = currentNoShares;
+    let potentialNoValue = currentNoValue;
+
+    pendingTrades.forEach(trade => {
+        if (trade.option === "yes") {
+            potentialYesShares += trade.amount;
+            potentialYesValue += trade.amount * trade.price;
+        } else {
+            potentialNoShares += trade.amount;
+            potentialNoValue += trade.amount * trade.price;
+        }
+    });
+
+    // Add new trade to calculate total exposure
+    if (newTrade.option === "yes") {
+        potentialYesShares += newTrade.amount;
+        potentialYesValue += newTrade.amount * newTrade.price;
     } else {
-        console.log(`⏳ NO PROFITABLE MATCHES FOUND - Trades remain pending`);
+        potentialNoShares += newTrade.amount;
+        potentialNoValue += newTrade.amount * newTrade.price;
+    }
+
+    // Calculate platform profit scenarios
+    const totalCollected = potentialYesValue + potentialNoValue;
+    const payoutIfYesWins = potentialYesShares * 10;
+    const payoutIfNoWins = potentialNoShares * 10;
+    const profitIfYesWins = totalCollected - payoutIfYesWins;
+    const profitIfNoWins = totalCollected - payoutIfNoWins;
+    const worstCaseProfit = Math.min(profitIfYesWins, profitIfNoWins);
+
+    console.log(`💰 Comprehensive Platform Exposure Analysis:
+        Total would be collected: ₹${totalCollected}
+        YES Shares: ${potentialYesShares} (payout ₹${payoutIfYesWins} if YES wins)
+        NO Shares: ${potentialNoShares} (payout ₹${payoutIfNoWins} if NO wins)
+        Profit if YES wins: ₹${profitIfYesWins}
+        Profit if NO wins: ₹${profitIfNoWins}
+        Worst case profit: ₹${worstCaseProfit}`);
+
+    // Execute new trade if platform doesn't lose money in worst case scenario
+    if (worstCaseProfit >= 0) {
+        console.log(`🚀 EXECUTING SINGLE TRADE - Platform guaranteed no loss! (Worst case: ₹${worstCaseProfit})`);
+        
+        // Execute the new trade
+        newTrade.status = "EXECUTED";
+        newTrade.executePrice = newTrade.price;
+        newTrade.executedAmount = newTrade.amount;
+        await newTrade.save();
+
+        // Also execute all pending trades since they're all profitable together
+        if (pendingTrades.length > 0) {
+            console.log(`🔄 Also executing ${pendingTrades.length} pending trades...`);
+            for (let pendingTrade of pendingTrades) {
+                pendingTrade.status = "EXECUTED";
+                pendingTrade.executePrice = pendingTrade.price;
+                pendingTrade.executedAmount = pendingTrade.amount;
+                await pendingTrade.save();
+
+                // Notify user of execution
+                emitUserTradeExecuted(pendingTrade.user.toString(), {
+                    _id: pendingTrade._id,
+                    option: pendingTrade.option,
+                    amount: pendingTrade.amount,
+                    price: pendingTrade.price,
+                    executePrice: pendingTrade.price,
+                    status: "EXECUTED",
+                    marketId: marketId
+                });
+            }
+        }
+
+        // Update market prices based on all executed trades
+        const allExecutedTrades = await Trade.find({
+            market: marketId,
+            status: { $in: ["EXECUTED", "PARTIALLY_EXECUTED"] }
+        });
+
+        if (allExecutedTrades.length > 0) {
+            let totalYesVol = 0, totalYesVal = 0, totalNoVol = 0, totalNoVal = 0;
+            
+            allExecutedTrades.forEach(trade => {
+                const execAmount = trade.executedAmount || trade.amount;
+                if (trade.option === "yes") {
+                    totalYesVol += execAmount;
+                    totalYesVal += execAmount * trade.executePrice;
+                } else {
+                    totalNoVol += execAmount;
+                    totalNoVal += execAmount * trade.executePrice;
+                }
+            });
+
+            // Update market with volume-weighted average prices
+            if (totalYesVol > 0 && totalNoVol > 0) {
+                const avgYesPrice = totalYesVal / totalYesVol;
+                const avgNoPrice = totalNoVal / totalNoVol;
+                
+                if (totalYesVol >= totalNoVol) {
+                    market.yesPrice = Math.max(0.5, Math.min(9.5, avgYesPrice));
+                    market.noPrice = 10 - market.yesPrice;
+                } else {
+                    market.noPrice = Math.max(0.5, Math.min(9.5, avgNoPrice));
+                    market.yesPrice = 10 - market.noPrice;
+                }
+            } else if (totalYesVol > 0) {
+                market.yesPrice = Math.max(0.5, Math.min(9.5, totalYesVal / totalYesVol));
+                market.noPrice = 10 - market.yesPrice;
+            } else if (totalNoVol > 0) {
+                market.noPrice = Math.max(0.5, Math.min(9.5, totalNoVal / totalNoVol));
+                market.yesPrice = 10 - market.noPrice;
+            }
+
+            market.totalYesAmount = totalYesVol;
+            market.totalNoAmount = totalNoVol;
+            await market.save();
+        }
+
+        // Emit market update
+        emitMarketPriceUpdate(marketId, {
+            yesPrice: market.yesPrice,
+            noPrice: market.noPrice,
+            totalYesAmount: market.totalYesAmount,
+            totalNoAmount: market.totalNoAmount,
+            executed: true,
+            totalCollected: totalCollected,
+            comprehensiveExecution: true
+        });
+
+        // Check threshold after execution
+        const thresholdTriggered = await checkMarketThreshold(marketId);
+        if (thresholdTriggered) {
+            console.log(`🎯 Market auto-settled due to threshold after comprehensive execution!`);
+        }
+
+        // Notify user of new trade execution
+        emitUserTradeExecuted(newTrade.user.toString(), {
+            _id: newTrade._id,
+            option: newTrade.option,
+            amount: newTrade.amount,
+            price: newTrade.price,
+            executePrice: newTrade.price,
+            status: "EXECUTED",
+            marketId: marketId
+        });
+
+        return true; // Trade was executed
+    } else {
+        console.log(`⏳ TRADE PENDING - Platform would lose money (worst case: ₹${worstCaseProfit})`);
         
         // Keep new trade as pending and emit to order book
         emitNewTrade(marketId, {
@@ -316,7 +486,7 @@ const executeTrade = async(marketId, newTrade) => {
             timestamp: newTrade.createdAt
         });
 
-        return false; // No executions
+        return false; // Trade is pending
     }
 };
 
