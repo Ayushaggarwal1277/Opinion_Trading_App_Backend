@@ -79,539 +79,99 @@ const updateMarketPrices = async (marketId) => {
     await market.save();
     return market;
 };
+const executeTrade = async (marketId, newTrade) => {
+  const market = await Market.findById(marketId);
+  if (!market) return;
 
-const executeTrade = async(marketId, newTrade) => {
-    const market = await Market.findById(marketId);
-    if(!market) return;
+  // Fetch trades
+  const allTrades = await Trade.find({ market: marketId });
+  const executedTrades = allTrades.filter(t => ["EXECUTED", "PARTIALLY_EXECUTED"].includes(t.status));
+  const pendingTrades = allTrades.filter(t => t.status === "PENDING");
 
-    // **ENHANCED PARTIAL EXECUTION LOGIC**
-    // Find profitable matches between pending trades and new trade
-    
-    // Get all existing trades for this market
-    const allExistingTrades = await Trade.find({
-        market: marketId
-    });
+  // Current platform state
+  let yesShares = 0, yesValue = 0, noShares = 0, noValue = 0;
+  executedTrades.forEach(t => {
+    const amt = t.executedAmount || 0;
+    if (t.option === "yes") { yesShares += amt; yesValue += amt * t.executePrice; }
+    else { noShares += amt; noValue += amt * t.executePrice; }
+  });
 
-    // Separate by status
-    const executedTrades = allExistingTrades.filter(t => t.status === "EXECUTED" || t.status === "PARTIALLY_EXECUTED");
-    const pendingTrades = allExistingTrades.filter(t => t.status === "PENDING");
+  // Include new trade in pending list
+  let yesPending = pendingTrades.filter(t => t.option === "yes");
+  let noPending = pendingTrades.filter(t => t.option === "no");
+  if (newTrade.option === "yes") yesPending.push(newTrade);
+  else noPending.push(newTrade);
 
-    // **CORRECTED PARTIAL EXECUTION ALGORITHM**
-    // CRITICAL: Platform must NEVER be in a losing position
-    
-    console.log(`📊 Current Market State:
-        Executed/Partial trades: ${executedTrades.length}
-        Pending trades: ${pendingTrades.length}
-        New trade: ${newTrade.amount} ${newTrade.option.toUpperCase()} at ₹${newTrade.price}`);
+  // FIFO: sort by createdAt
+  yesPending.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+  noPending.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
 
-    // Calculate CURRENT platform exposure from executed trades only
-    let preYesShares = 0;
-    let preYesValue = 0;
-    let preNoShares = 0;
-    let preNoValue = 0;
+  let matches = [];
 
-    executedTrades.forEach(trade => {
-        const tradeAmount = trade.executedAmount || trade.amount;
-        if (trade.option === "yes") {
-            preYesShares += tradeAmount;
-            preYesValue += tradeAmount * trade.executePrice;
-        } else {
-            preNoShares += tradeAmount;
-            preNoValue += tradeAmount * trade.executePrice;
-        }
-    });
+  // Try matching FIFO
+  let i = 0, j = 0;
+  while (i < yesPending.length && j < noPending.length) {
+    const y = yesPending[i];
+    const n = noPending[j];
+    const yRemain = (y.amount - (y.executedAmount || 0));
+    const nRemain = (n.amount - (n.executedAmount || 0));
+    const qty = Math.min(yRemain, nRemain);
 
-    const currentCollected = preYesValue + preNoValue;
-    const currentPayoutIfYesWins = preYesShares * 10;
-    const currentPayoutIfNoWins = preNoShares * 10;
-    const currentProfitIfYesWins = currentCollected - currentPayoutIfYesWins;
-    const currentProfitIfNoWins = currentCollected - currentPayoutIfNoWins;
-    const currentWorstCase = Math.min(currentProfitIfYesWins, currentProfitIfNoWins);
+    // Tentative update
+    const newYesShares = yesShares + qty;
+    const newYesValue = yesValue + qty * y.price;
+    const newNoShares = noShares + qty;
+    const newNoValue = noValue + qty * n.price;
 
-    console.log(`🔍 CURRENT Platform Position Analysis:
-        YES: ${preYesShares} shares, ₹${preYesValue} collected
-        NO: ${preNoShares} shares, ₹${preNoValue} collected
-        Total collected: ₹${currentCollected}
-        If YES wins: Pay ₹${currentPayoutIfYesWins}, Profit: ₹${currentProfitIfYesWins}
-        If NO wins: Pay ₹${currentPayoutIfNoWins}, Profit: ₹${currentProfitIfNoWins}
-        Current worst case: ₹${currentWorstCase}`);
-
-    if (currentWorstCase < 0) {
-        console.log(`🚨 CRITICAL: Platform is ALREADY in losing position (₹${currentWorstCase})!`);
-        console.log(`🛑 Rejecting new trade to prevent further losses.`);
-        
-        // Keep new trade as pending
-        emitNewTrade(marketId, {
-            _id: newTrade._id,
-            option: newTrade.option,
-            side: newTrade.side,
-            amount: newTrade.amount,
-            price: newTrade.price,
-            status: "PENDING",
-            user: newTrade.user,
-            timestamp: newTrade.createdAt,
-            reason: "Platform exposure exceeded"
-        });
-
-        return false; // Platform already losing, reject new trade
-    }
-
-    // Try to find profitable partial matches that maintain platform safety
-    const yesTradesAvailable = [...pendingTrades.filter(t => t.option === "yes")];
-    const noTradesAvailable = [...pendingTrades.filter(t => t.option === "no")];
-
-    // Add new trade to appropriate list
-    if (newTrade.option === "yes") {
-        yesTradesAvailable.push(newTrade);
-    } else {
-        noTradesAvailable.push(newTrade);
-    }
-
-    // Sort by best prices for optimal matching
-    yesTradesAvailable.sort((a, b) => b.price - a.price);
-    noTradesAvailable.sort((a, b) => a.price - b.price);
-
-    let bestExecutions = [];
-    let bestTotalValue = 0;
-
-    // **SAFE GREEDY MATCHING ALGORITHM**
-    // Only execute pairs that guarantee platform profit
-    for (let yesTradeIndex = 0; yesTradeIndex < yesTradesAvailable.length; yesTradeIndex++) {
-        const yesTrade = yesTradesAvailable[yesTradeIndex];
-        let yesRemainingAmount = yesTrade.remainingAmount || yesTrade.amount;
-
-        if (yesRemainingAmount <= 0) continue;
-
-        for (let noTradeIndex = 0; noTradeIndex < noTradesAvailable.length; noTradeIndex++) {
-            const noTrade = noTradesAvailable[noTradeIndex];
-            let noRemainingAmount = noTrade.remainingAmount || noTrade.amount;
-
-            if (noRemainingAmount <= 0) continue;
-
-            // CHECK: Execute if pair generates profit OR breaks even (>= 10)
-            const pairTotal = yesTrade.price + noTrade.price;
-            if (pairTotal >= 10) { // Must be >= 10 (break-even or profit)
-                const executionAmount = Math.min(yesRemainingAmount, noRemainingAmount);
-                const executionValue = executionAmount * pairTotal;
-                const platformProfit = executionValue - (executionAmount * 10);
-
-                console.log(`💰 PROFITABLE/BREAK-EVEN PAIR FOUND:
-                    YES: ${executionAmount} shares at ₹${yesTrade.price}
-                    NO: ${executionAmount} shares at ₹${noTrade.price}
-                    Pair total: ₹${pairTotal} (>= ₹10)
-                    Platform profit: ₹${platformProfit}`);
-
-                bestExecutions.push({
-                    yesTradeId: yesTrade._id,
-                    noTradeId: noTrade._id,
-                    amount: executionAmount,
-                    yesPrice: yesTrade.price,
-                    noPrice: noTrade.price,
-                    totalValue: executionValue,
-                    profit: platformProfit
-                });
-
-                bestTotalValue += executionValue;
-
-                // Update remaining amounts
-                yesRemainingAmount -= executionAmount;
-                noRemainingAmount -= executionAmount;
-                yesTrade.remainingAmount = yesRemainingAmount;
-                noTrade.remainingAmount = noRemainingAmount;
-
-                if (yesRemainingAmount <= 0) break;
-            }
-        }
-    }
-
-    console.log(`📈 EXECUTION SUMMARY:
-        Found ${bestExecutions.length} profitable pairs
-        Total execution value: ₹${bestTotalValue}`);
-
-    // **EXECUTE ALL PROFITABLE PAIRS**
-    if (bestExecutions.length > 0) {
-        for (const execution of bestExecutions) {
-            const yesTradeToUpdate = await Trade.findById(execution.yesTradeId);
-            const noTradeToUpdate = await Trade.findById(execution.noTradeId);
-
-            // Update YES trade
-            const yesOriginalAmount = yesTradeToUpdate.amount;
-            const yesExecutedSoFar = yesTradeToUpdate.executedAmount || 0;
-            const yesNewExecuted = yesExecutedSoFar + execution.amount;
-
-            await Trade.findByIdAndUpdate(execution.yesTradeId, {
-                executePrice: execution.yesPrice,
-                executedAmount: yesNewExecuted,
-                status: yesNewExecuted >= yesOriginalAmount ? "EXECUTED" : "PARTIALLY_EXECUTED",
-                executedAt: new Date()
-            });
-
-            // Update NO trade
-            const noOriginalAmount = noTradeToUpdate.amount;
-            const noExecutedSoFar = noTradeToUpdate.executedAmount || 0;
-            const noNewExecuted = noExecutedSoFar + execution.amount;
-
-            await Trade.findByIdAndUpdate(execution.noTradeId, {
-                executePrice: execution.noPrice,
-                executedAmount: noNewExecuted,
-                status: noNewExecuted >= noOriginalAmount ? "EXECUTED" : "PARTIALLY_EXECUTED",
-                executedAt: new Date()
-            });
-
-            console.log(`✅ EXECUTED PAIR:
-                YES Trade ${execution.yesTradeId}: ${execution.amount} shares at ₹${execution.yesPrice}
-                NO Trade ${execution.noTradeId}: ${execution.amount} shares at ₹${execution.noPrice}
-                Platform profit: ₹${execution.profit}`);
-
-            // Emit live trade notifications
-            emitNewTrade(marketId, {
-                _id: yesTradeToUpdate._id,
-                option: "yes",
-                side: yesTradeToUpdate.side,
-                amount: execution.amount,
-                price: execution.yesPrice,
-                status: yesNewExecuted >= yesOriginalAmount ? "EXECUTED" : "PARTIALLY_EXECUTED",
-                executedAmount: yesNewExecuted,
-                user: yesTradeToUpdate.user,
-                timestamp: new Date(),
-                reason: "Partial execution matched"
-            });
-
-            emitNewTrade(marketId, {
-                _id: noTradeToUpdate._id,
-                option: "no",
-                side: noTradeToUpdate.side,
-                amount: execution.amount,
-                price: execution.noPrice,
-                status: noNewExecuted >= noOriginalAmount ? "EXECUTED" : "PARTIALLY_EXECUTED",
-                executedAmount: noNewExecuted,
-                user: noTradeToUpdate.user,
-                timestamp: new Date(),
-                reason: "Partial execution matched"
-            });
-        }
-
-        // Emit updated order book after all executions
-        emitOrderBookUpdate(marketId);
-        return true;
-    } else {
-        console.log(`📋 NO PROFITABLE PAIRS FOUND - All trades remain pending`);
-        
-        // Emit the new trade as pending
-        emitNewTrade(marketId, {
-            _id: newTrade._id,
-            option: newTrade.option,
-            side: newTrade.side,
-            amount: newTrade.amount,
-            price: newTrade.price,
-            status: "PENDING",
-            user: newTrade.user,
-            timestamp: newTrade.createdAt,
-            reason: "No profitable matches available"
-        });
-
-        return false;
-    }
-
-    // **EXECUTE PARTIAL MATCHES**
-    if (executionsThisRound.length > 0) {
-        console.log(`� EXECUTING ${executionsThisRound.length} PARTIAL MATCHES - Total value: ₹${totalExecutedValue}`);
-
-        for (const execution of executionsThisRound) {
-            // Update YES trade
-            const yesTradeToUpdate = await Trade.findById(execution.yesTradeId);
-            const originalYesAmount = yesTradeToUpdate.amount;
-            const executedYesAmount = (yesTradeToUpdate.executedAmount || 0) + execution.amount;
-
-            if (executedYesAmount >= originalYesAmount) {
-                // Fully executed
-                yesTradeToUpdate.status = "EXECUTED";
-                yesTradeToUpdate.executedAmount = originalYesAmount;
-            } else {
-                // Partially executed
-                yesTradeToUpdate.status = "PARTIALLY_EXECUTED";
-                yesTradeToUpdate.executedAmount = executedYesAmount;
-            }
-            yesTradeToUpdate.executePrice = execution.yesPrice;
-            await yesTradeToUpdate.save();
-
-            // Update NO trade
-            const noTradeToUpdate = await Trade.findById(execution.noTradeId);
-            const originalNoAmount = noTradeToUpdate.amount;
-            const executedNoAmount = (noTradeToUpdate.executedAmount || 0) + execution.amount;
-
-            if (executedNoAmount >= originalNoAmount) {
-                // Fully executed
-                noTradeToUpdate.status = "EXECUTED";
-                noTradeToUpdate.executedAmount = originalNoAmount;
-            } else {
-                // Partially executed
-                noTradeToUpdate.status = "PARTIALLY_EXECUTED";
-                noTradeToUpdate.executedAmount = executedNoAmount;
-            }
-            noTradeToUpdate.executePrice = execution.noPrice;
-            await noTradeToUpdate.save();
-
-            // Notify users of executions
-            emitUserTradeExecuted(yesTradeToUpdate.user.toString(), {
-                _id: yesTradeToUpdate._id,
-                option: "yes",
-                amount: execution.amount,
-                originalAmount: originalYesAmount,
-                price: execution.yesPrice,
-                executePrice: execution.yesPrice,
-                status: yesTradeToUpdate.status,
-                marketId: marketId,
-                isPartial: yesTradeToUpdate.status === "PARTIALLY_EXECUTED"
-            });
-
-            emitUserTradeExecuted(noTradeToUpdate.user.toString(), {
-                _id: noTradeToUpdate._id,
-                option: "no",
-                amount: execution.amount,
-                originalAmount: originalNoAmount,
-                price: execution.noPrice,
-                executePrice: execution.noPrice,
-                status: noTradeToUpdate.status,
-                marketId: marketId,
-                isPartial: noTradeToUpdate.status === "PARTIALLY_EXECUTED"
-            });
-        }
-
-        // Update market prices based on all executed trades
-        const allExecutedTrades = await Trade.find({
-            market: marketId,
-            status: { $in: ["EXECUTED", "PARTIALLY_EXECUTED"] }
-        });
-
-        if (allExecutedTrades.length > 0) {
-            let totalYesVol = 0, totalYesVal = 0, totalNoVol = 0, totalNoVal = 0;
-            
-            allExecutedTrades.forEach(trade => {
-                const execAmount = trade.executedAmount || trade.amount;
-                if (trade.option === "yes") {
-                    totalYesVol += execAmount;
-                    totalYesVal += execAmount * trade.executePrice;
-                } else {
-                    totalNoVol += execAmount;
-                    totalNoVal += execAmount * trade.executePrice;
-                }
-            });
-
-            // Update market with volume-weighted average prices (complementary)
-            if (totalYesVol > 0 && totalNoVol > 0) {
-                const avgYesPrice = totalYesVal / totalYesVol;
-                const avgNoPrice = totalNoVal / totalNoVol;
-                
-                if (totalYesVol >= totalNoVol) {
-                    market.yesPrice = Math.max(0.5, Math.min(9.5, avgYesPrice));
-                    market.noPrice = 10 - market.yesPrice;
-                } else {
-                    market.noPrice = Math.max(0.5, Math.min(9.5, avgNoPrice));
-                    market.yesPrice = 10 - market.noPrice;
-                }
-            } else if (totalYesVol > 0) {
-                market.yesPrice = Math.max(0.5, Math.min(9.5, totalYesVal / totalYesVol));
-                market.noPrice = 10 - market.yesPrice;
-            } else if (totalNoVol > 0) {
-                market.noPrice = Math.max(0.5, Math.min(9.5, totalNoVal / totalNoVol));
-                market.yesPrice = 10 - market.noPrice;
-            }
-
-            market.totalYesAmount = totalYesVol;
-            market.totalNoAmount = totalNoVol;
-            await market.save();
-        }
-
-        // Emit market update with execution details
-        emitMarketPriceUpdate(marketId, {
-            yesPrice: market.yesPrice,
-            noPrice: market.noPrice,
-            totalYesAmount: market.totalYesAmount,
-            totalNoAmount: market.totalNoAmount,
-            executed: true,
-            totalCollected: totalExecutedValue,
-            partialExecutions: executionsThisRound.length
-        });
-
-        // Emit order book update for partial executions
-        emitOrderBookUpdate(marketId, {
-            type: 'partial_execution',
-            trades: executionsThisRound.map(exec => ({
-                yesTradeId: exec.yesTradeId,
-                noTradeId: exec.noTradeId,
-                executedAmount: exec.amount,
-                yesPrice: exec.yesPrice,
-                noPrice: exec.noPrice
-            }))
-        });
-
-        // Check if threshold reached after price update
-        const thresholdTriggered = await checkMarketThreshold(marketId);
-        if (thresholdTriggered) {
-            console.log(`🎯 Market auto-settled due to threshold after partial executions!`);
-        }
-
-        return true; // Some executions happened
-    } 
-    
-    // **COMPREHENSIVE PLATFORM EXPOSURE CHECK**
-    // If no direct pairs found, check if ONLY the new trade can execute without platform loss
-    console.log(`🔍 No direct pairs found. Checking if new trade alone is safe to execute...`);
-    
-    // Calculate current platform position from ONLY executed trades
-    let currentYesShares = 0;
-    let currentYesValue = 0;
-    let currentNoShares = 0;
-    let currentNoValue = 0;
-
-    executedTrades.forEach(trade => {
-        const tradeAmount = trade.executedAmount || trade.amount;
-        if (trade.option === "yes") {
-            currentYesShares += tradeAmount;
-            currentYesValue += tradeAmount * trade.executePrice;
-        } else {
-            currentNoShares += tradeAmount;
-            currentNoValue += tradeAmount * trade.executePrice;
-        }
-    });
-
-    // Calculate position if ONLY the new trade is added (don't include pending trades)
-    let newYesShares = currentYesShares;
-    let newYesValue = currentYesValue;
-    let newNoShares = currentNoShares;
-    let newNoValue = currentNoValue;
-
-    // Add ONLY the new trade
-    if (newTrade.option === "yes") {
-        newYesShares += newTrade.amount;
-        newYesValue += newTrade.amount * newTrade.price;
-    } else {
-        newNoShares += newTrade.amount;
-        newNoValue += newTrade.amount * newTrade.price;
-    }
-
-    // Calculate platform profit scenarios with ONLY the new trade added
     const totalCollected = newYesValue + newNoValue;
-    const payoutIfYesWins = newYesShares * 10;
-    const payoutIfNoWins = newNoShares * 10;
-    const profitIfYesWins = totalCollected - payoutIfYesWins;
-    const profitIfNoWins = totalCollected - payoutIfNoWins;
-    const worstCaseProfit = Math.min(profitIfYesWins, profitIfNoWins);
+    const payoutIfYes = newYesShares * 10;
+    const payoutIfNo = newNoShares * 10;
+    const worstProfit = Math.min(totalCollected - payoutIfYes, totalCollected - payoutIfNo);
 
-    console.log(`💰 Platform Exposure Analysis (Current + New Trade Only):
-        Current position: ${currentYesShares} YES, ${currentNoShares} NO
-        After new trade: ${newYesShares} YES, ${newNoShares} NO
-        Total would be collected: ₹${totalCollected}
-        Payout if YES wins: ₹${payoutIfYesWins}
-        Payout if NO wins: ₹${payoutIfNoWins}
-        Profit if YES wins: ₹${profitIfYesWins}
-        Profit if NO wins: ₹${profitIfNoWins}
-        Worst case profit: ₹${worstCaseProfit}`);
+    if (worstProfit >= 0) {
+      // Safe execution
+      matches.push({ yes: y, no: n, qty, yesPrice: y.price, noPrice: n.price });
+      yesShares = newYesShares;
+      yesValue = newYesValue;
+      noShares = newNoShares;
+      noValue = newNoValue;
 
-    // Execute new trade if platform doesn't lose money in worst case scenario
-    if (worstCaseProfit >= 0) {
-        console.log(`🚀 EXECUTING NEW TRADE - Platform guaranteed no loss! (Worst case: ₹${worstCaseProfit})`);
-        
-        // Execute ONLY the new trade (don't execute pending trades)
-        newTrade.status = "EXECUTED";
-        newTrade.executePrice = newTrade.price;
-        newTrade.executedAmount = newTrade.amount;
-        await newTrade.save();
+      // Update remaining
+      y.executedAmount = (y.executedAmount || 0) + qty;
+      y.status = y.executedAmount >= y.amount ? "EXECUTED" : "PARTIALLY_EXECUTED";
+      n.executedAmount = (n.executedAmount || 0) + qty;
+      n.status = n.executedAmount >= n.amount ? "EXECUTED" : "PARTIALLY_EXECUTED";
 
-        // Update market prices based on all executed trades
-        const allExecutedTrades = await Trade.find({
-            market: marketId,
-            status: { $in: ["EXECUTED", "PARTIALLY_EXECUTED"] }
-        });
-
-        if (allExecutedTrades.length > 0) {
-            let totalYesVol = 0, totalYesVal = 0, totalNoVol = 0, totalNoVal = 0;
-            
-            allExecutedTrades.forEach(trade => {
-                const execAmount = trade.executedAmount || trade.amount;
-                if (trade.option === "yes") {
-                    totalYesVol += execAmount;
-                    totalYesVal += execAmount * trade.executePrice;
-                } else {
-                    totalNoVol += execAmount;
-                    totalNoVal += execAmount * trade.executePrice;
-                }
-            });
-
-            // Update market with volume-weighted average prices
-            if (totalYesVol > 0 && totalNoVol > 0) {
-                const avgYesPrice = totalYesVal / totalYesVol;
-                const avgNoPrice = totalNoVal / totalNoVol;
-                
-                if (totalYesVol >= totalNoVol) {
-                    market.yesPrice = Math.max(0.5, Math.min(9.5, avgYesPrice));
-                    market.noPrice = 10 - market.yesPrice;
-                } else {
-                    market.noPrice = Math.max(0.5, Math.min(9.5, avgNoPrice));
-                    market.yesPrice = 10 - market.noPrice;
-                }
-            } else if (totalYesVol > 0) {
-                market.yesPrice = Math.max(0.5, Math.min(9.5, totalYesVal / totalYesVol));
-                market.noPrice = 10 - market.yesPrice;
-            } else if (totalNoVol > 0) {
-                market.noPrice = Math.max(0.5, Math.min(9.5, totalNoVal / totalNoVol));
-                market.yesPrice = 10 - market.noPrice;
-            }
-
-            market.totalYesAmount = totalYesVol;
-            market.totalNoAmount = totalNoVol;
-            await market.save();
-        }
-
-        // Emit market update (single trade execution)
-        emitMarketPriceUpdate(marketId, {
-            yesPrice: market.yesPrice,
-            noPrice: market.noPrice,
-            totalYesAmount: market.totalYesAmount,
-            totalNoAmount: market.totalNoAmount,
-            executed: true,
-            singleTradeExecution: true,
-            newTradeAmount: newTrade.amount,
-            newTradeOption: newTrade.option
-        });
-
-        // Check threshold after execution
-        const thresholdTriggered = await checkMarketThreshold(marketId);
-        if (thresholdTriggered) {
-            console.log(`🎯 Market auto-settled due to threshold after single trade execution!`);
-        }
-
-        // Notify user of new trade execution
-        emitUserTradeExecuted(newTrade.user.toString(), {
-            _id: newTrade._id,
-            option: newTrade.option,
-            amount: newTrade.amount,
-            price: newTrade.price,
-            executePrice: newTrade.price,
-            status: "EXECUTED",
-            marketId: marketId
-        });
-
-        return true; // Trade was executed
+      if (y.executedAmount >= y.amount) i++;
+      if (n.executedAmount >= n.amount) j++;
     } else {
-        console.log(`⏳ TRADE PENDING - Platform would lose money (worst case: ₹${worstCaseProfit})`);
-        
-        // Keep new trade as pending and emit to order book
-        emitNewTrade(marketId, {
-            _id: newTrade._id,
-            option: newTrade.option,
-            side: newTrade.side,
-            amount: newTrade.amount,
-            price: newTrade.price,
-            status: "PENDING",
-            user: newTrade.user,
-            timestamp: newTrade.createdAt
-        });
-
-        return false; // Trade is pending
+      // Stop if next match would cause loss
+      break;
     }
+  }
+
+  // Save executions
+  for (const m of matches) {
+    await Trade.findByIdAndUpdate(m.yes._id, {
+      status: m.yes.status,
+      executedAmount: m.yes.executedAmount,
+      executePrice: m.yesPrice,
+      executedAt: new Date()
+    });
+    await Trade.findByIdAndUpdate(m.no._id, {
+      status: m.no.status,
+      executedAmount: m.no.executedAmount,
+      executePrice: m.noPrice,
+      executedAt: new Date()
+    });
+
+    emitNewTrade(marketId, { ...m, status: "EXECUTED" });
+  }
+
+  emitOrderBookUpdate(marketId);
+  return matches.length > 0;
 };
+
 
 const createTrade = asyncHandler(async (req, res) => {
     const user = req.user;  //use middleware in routes
