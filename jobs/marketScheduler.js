@@ -22,41 +22,41 @@ cron.schedule("* * * * *", async () => {
     const activeMarkets = await Market.find({ status: "active" });
     
     for (let market of activeMarkets) {
-      // Calculate current amounts from executed trades
+      // Calculate current amounts from executed and partially executed trades
       // For YES: buy side adds to YES amount, sell side subtracts from YES amount
       const yesBuyTrades = await Trade.find({ 
         market: market._id, 
         option: "yes", 
         side: "buy",
-        status: "EXECUTED" 
+        status: { $in: ["EXECUTED", "PARTIALLY_EXECUTED"] }
       });
       
       const yesSellTrades = await Trade.find({ 
         market: market._id, 
         option: "yes", 
         side: "sell",
-        status: "EXECUTED" 
+        status: { $in: ["EXECUTED", "PARTIALLY_EXECUTED"] }
       });
       
       const noBuyTrades = await Trade.find({ 
         market: market._id, 
         option: "no", 
         side: "buy",
-        status: "EXECUTED" 
+        status: { $in: ["EXECUTED", "PARTIALLY_EXECUTED"] }
       });
       
       const noSellTrades = await Trade.find({ 
         market: market._id, 
         option: "no", 
         side: "sell",
-        status: "EXECUTED" 
+        status: { $in: ["EXECUTED", "PARTIALLY_EXECUTED"] }
       });
       
-      // Calculate total amounts (buy adds, sell subtracts)
-      const totalYesBuy = yesBuyTrades.reduce((sum, trade) => sum + trade.executedAmount, 0);
-      const totalYesSell = yesSellTrades.reduce((sum, trade) => sum + trade.executedAmount, 0);
-      const totalNoBuy = noBuyTrades.reduce((sum, trade) => sum + trade.executedAmount, 0);
-      const totalNoSell = noSellTrades.reduce((sum, trade) => sum + trade.executedAmount, 0);
+      // Calculate total amounts (buy adds, sell subtracts) - use executedAmount for partial trades
+      const totalYesBuy = yesBuyTrades.reduce((sum, trade) => sum + (trade.executedAmount || trade.amount), 0);
+      const totalYesSell = yesSellTrades.reduce((sum, trade) => sum + (trade.executedAmount || trade.amount), 0);
+      const totalNoBuy = noBuyTrades.reduce((sum, trade) => sum + (trade.executedAmount || trade.amount), 0);
+      const totalNoSell = noSellTrades.reduce((sum, trade) => sum + (trade.executedAmount || trade.amount), 0);
       
       const totalYesAmount = totalYesBuy - totalYesSell;
       const totalNoAmount = totalNoBuy - totalNoSell;
@@ -221,8 +221,11 @@ cron.schedule("* * * * *", async () => {
         ...settlementData // spread temperature/threshold/yesPrice data
       });
 
-      // Process executed trades and calculate winnings
-      const trades = await Trade.find({ market: market._id, status: "EXECUTED" }).populate('user');
+      // Process executed trades and calculate winnings (include partially executed trades)
+      const trades = await Trade.find({ 
+        market: market._id, 
+        status: { $in: ["EXECUTED", "PARTIALLY_EXECUTED"] }
+      }).populate('user');
       
       // Track user trade summaries
       const userTradeSummaries = {};
@@ -230,10 +233,13 @@ cron.schedule("* * * * *", async () => {
       for (let trade of trades) {
         let payout = 0;
         const won = trade.option.toUpperCase() === result;
+        
+        // Use executedAmount for partially executed trades, fallback to amount for older trades
+        const settledAmount = trade.executedAmount || trade.amount;
 
         if (won) {
-          // Winner gets 9 per share
-          payout = trade.executedAmount * 9;
+          // Winner gets 9 per share (only for executed/partially executed amount)
+          payout = settledAmount * 9;
         } else {
           // Loser gets nothing
           payout = 0;
@@ -256,9 +262,11 @@ cron.schedule("* * * * *", async () => {
             _id: trade._id,
             option: trade.option,
             side: trade.side,
-            amount: trade.executedAmount,
+            amount: settledAmount, // Use settled amount (executed amount for partial trades)
+            originalAmount: trade.amount, // Include original amount for reference
             price: trade.price,
-            marketId: market._id
+            marketId: market._id,
+            wasPartiallyExecuted: trade.status === "PARTIALLY_EXECUTED"
           },
           payout: payout,
           marketResult: result,
@@ -281,8 +289,8 @@ cron.schedule("* * * * *", async () => {
         }
 
         const tradeInvestment = trade.side === "buy" ? 
-          trade.executedAmount * trade.price : 
-          trade.executedAmount * (10 - trade.price);
+          settledAmount * trade.price : 
+          settledAmount * (10 - trade.price);
 
         userTradeSummaries[userId].totalInvested += tradeInvestment;
         userTradeSummaries[userId].totalPayout += payout;
@@ -290,11 +298,13 @@ cron.schedule("* * * * *", async () => {
           _id: trade._id,
           option: trade.option,
           side: trade.side,
-          amount: trade.executedAmount,
+          amount: settledAmount, // Use settled amount
+          originalAmount: trade.amount, // Keep original for reference
           price: trade.price,
           invested: tradeInvestment,
           payout: payout,
-          won: won
+          won: won,
+          wasPartiallyExecuted: trade.status === "PARTIALLY_EXECUTED"
         });
 
         trade.status = "SETTLED";
@@ -321,7 +331,18 @@ cron.schedule("* * * * *", async () => {
       });
 
       // Handle pending trades - refund users
-      const pendingTrades = await Trade.find({ market: market._id, status: "PENDING" }).populate('user');
+      const pendingTrades = await Trade.find({ 
+        market: market._id, 
+        status: "PENDING" 
+      }).populate('user');
+      
+      // Handle unexecuted portions of partially executed trades
+      const partiallyExecutedTrades = await Trade.find({ 
+        market: market._id, 
+        status: "PARTIALLY_EXECUTED" 
+      }).populate('user');
+
+      // Process pending trades
       for (let trade of pendingTrades) {
         const refundAmount = trade.side === "buy" ? trade.amount * trade.price : trade.amount * (10 - trade.price);
         trade.user.balance += refundAmount;
@@ -352,7 +373,44 @@ cron.schedule("* * * * *", async () => {
         await trade.save();
       }
 
-      console.log(`Market "${market.question}" settled with result: ${result}. Processed ${trades.length} executed trades and ${pendingTrades.length} pending trades.`);
+      // Process unexecuted portions of partially executed trades
+      for (let trade of partiallyExecutedTrades) {
+        const unexecutedAmount = trade.amount - (trade.executedAmount || 0);
+        if (unexecutedAmount > 0) {
+          const refundAmount = trade.side === "buy" ? 
+            unexecutedAmount * trade.price : 
+            unexecutedAmount * (10 - trade.price);
+          
+          trade.user.balance += refundAmount;
+          await trade.user.save();
+          
+          // Emit balance update for partial refunds
+          emitUserBalanceUpdate(trade.user._id.toString(), {
+            newBalance: trade.user.balance,
+            change: refundAmount,
+            reason: `Market settled - unexecuted portion refunded (${unexecutedAmount}/${trade.amount} shares)`
+          });
+
+          // Emit partial trade refund notification
+          emitUserTradeRefunded(trade.user._id.toString(), {
+            trade: {
+              _id: trade._id,
+              option: trade.option,
+              side: trade.side,
+              amount: unexecutedAmount, // Only the unexecuted portion
+              originalAmount: trade.amount,
+              executedAmount: trade.executedAmount,
+              price: trade.price,
+              marketId: market._id
+            },
+            refundAmount: refundAmount,
+            reason: "Market settled - unexecuted portion refunded",
+            isPartialRefund: true
+          });
+        }
+      }
+
+      console.log(`Market "${market.question}" settled with result: ${result}. Processed ${trades.length} executed/partially executed trades, ${pendingTrades.length} pending trades, and ${partiallyExecutedTrades.length} partial trade refunds.`);
     }
 
     if (marketsToSettle.length > 0) {

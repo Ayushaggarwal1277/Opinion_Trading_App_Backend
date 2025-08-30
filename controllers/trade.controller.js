@@ -83,72 +83,24 @@ const executeTrade = async(marketId, newTrade) => {
     const market = await Market.findById(marketId);
     if(!market) return;
 
-    // **IMPROVED EXECUTION LOGIC** - Consider all platform exposure
-    // Platform should calculate total exposure including executed + pending + new trade
+    // **ENHANCED PARTIAL EXECUTION LOGIC**
+    // Find profitable matches between pending trades and new trade
     
-    // Get ALL trades for this market (executed + pending)
+    // Get all existing trades for this market
     const allExistingTrades = await Trade.find({
         market: marketId
     });
 
-    // Separate executed and pending trades
-    const executedTrades = allExistingTrades.filter(t => t.status === "EXECUTED");
+    // Separate by status
+    const executedTrades = allExistingTrades.filter(t => t.status === "EXECUTED" || t.status === "PARTIALLY_EXECUTED");
     const pendingTrades = allExistingTrades.filter(t => t.status === "PENDING");
 
-    // Calculate current platform position
-    let totalYesShares = 0;
-    let totalYesValue = 0;
-    let totalNoShares = 0;
-    let totalNoValue = 0;
+    console.log(`📊 Current Market State:
+        Executed/Partial trades: ${executedTrades.length}
+        Pending trades: ${pendingTrades.length}
+        New trade: ${newTrade.amount} ${newTrade.option.toUpperCase()} at ₹${newTrade.price}`);
 
-    // Add executed trades to platform position
-    executedTrades.forEach(trade => {
-        if (trade.option === "yes") {
-            totalYesShares += trade.executedAmount;
-            totalYesValue += trade.executedAmount * trade.executePrice;
-        } else {
-            totalNoShares += trade.executedAmount;
-            totalNoValue += trade.executedAmount * trade.executePrice;
-        }
-    });
-
-    // Add pending trades to potential position
-    pendingTrades.forEach(trade => {
-        if (trade.option === "yes") {
-            totalYesShares += trade.amount;
-            totalYesValue += trade.amount * trade.price;
-        } else {
-            totalNoShares += trade.amount;
-            totalNoValue += trade.amount * trade.price;
-        }
-    });
-
-    // Add new trade to calculate new total position
-    if (newTrade.option === "yes") {
-        totalYesShares += newTrade.amount;
-        totalYesValue += newTrade.amount * newTrade.price;
-    } else {
-        totalNoShares += newTrade.amount;
-        totalNoValue += newTrade.amount * newTrade.price;
-    }
-
-    // Calculate platform's total exposure and profit scenarios
-    const totalCollected = totalYesValue + totalNoValue;
-    const payoutIfYesWins = totalYesShares * 10;
-    const payoutIfNoWins = totalNoShares * 10;
-    const profitIfYesWins = totalCollected - payoutIfYesWins;
-    const profitIfNoWins = totalCollected - payoutIfNoWins;
-    const worstCaseProfit = Math.min(profitIfYesWins, profitIfNoWins);
-
-    console.log(`💰 Platform Exposure Analysis:
-        Total Collected: ₹${totalCollected}
-        YES Shares: ${totalYesShares} (payout ₹${payoutIfYesWins} if YES wins)
-        NO Shares: ${totalNoShares} (payout ₹${payoutIfNoWins} if NO wins)
-        Profit if YES wins: ₹${profitIfYesWins}
-        Profit if NO wins: ₹${profitIfNoWins}
-        Worst case profit: ₹${worstCaseProfit}`);
-
-    // **ENHANCED PARTIAL EXECUTION LOGIC**
+    // **PARTIAL EXECUTION ALGORITHM**
     // Try to find profitable partial matches between pending trades of opposite types
     const yesTradesAvailable = pendingTrades.filter(t => t.option === "yes");
     const noTradesAvailable = pendingTrades.filter(t => t.option === "no");
@@ -167,7 +119,7 @@ const executeTrade = async(marketId, newTrade) => {
     let executionsThisRound = [];
     let totalExecutedValue = 0;
 
-    // **PARTIAL EXECUTION ALGORITHM**
+    // **GREEDY MATCHING ALGORITHM**
     // Match YES and NO trades optimally, allowing partial fills
     for (let yesTradeIndex = 0; yesTradeIndex < yesTradesAvailable.length; yesTradeIndex++) {
         const yesTrade = yesTradesAvailable[yesTradeIndex];
@@ -186,11 +138,13 @@ const executeTrade = async(marketId, newTrade) => {
                 // Calculate optimal execution amount (minimum of both remaining amounts)
                 const executionAmount = Math.min(yesRemainingAmount, noRemainingAmount);
                 const executionValue = executionAmount * (yesTrade.price + noTrade.price);
+                const platformProfit = executionValue - (executionAmount * 10);
 
-                console.log(`🎯 PARTIAL MATCH FOUND:
+                console.log(`🎯 PROFITABLE MATCH FOUND:
                     YES: ${executionAmount} shares at ₹${yesTrade.price}
                     NO: ${executionAmount} shares at ₹${noTrade.price}
-                    Total value: ₹${executionValue} (Profit: ₹${executionValue - (executionAmount * 10)})`);
+                    Total collected: ₹${executionValue}
+                    Platform profit: ₹${platformProfit}`);
 
                 // Execute this partial match
                 executionsThisRound.push({
@@ -199,7 +153,8 @@ const executeTrade = async(marketId, newTrade) => {
                     amount: executionAmount,
                     yesPrice: yesTrade.price,
                     noPrice: noTrade.price,
-                    totalValue: executionValue
+                    totalValue: executionValue,
+                    profit: platformProfit
                 });
 
                 totalExecutedValue += executionValue;
@@ -603,6 +558,7 @@ const getAllUserOrders = asyncHandler(async (req, res) => {
         const groupedOrders = {
             pending: orders.filter(order => order.status === "PENDING"),
             executed: orders.filter(order => order.status === "EXECUTED"),
+            partiallyExecuted: orders.filter(order => order.status === "PARTIALLY_EXECUTED"),
             cancelled: orders.filter(order => order.status === "CANCELLED"),
             settled: orders.filter(order => order.status === "SETTLED")
         };
