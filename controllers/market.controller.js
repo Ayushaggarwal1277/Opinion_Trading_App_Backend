@@ -1,5 +1,6 @@
 import asyncHandler from "../utils/asyncHandler.js";
 import { Market } from "../models/market.models.js";
+import { checkMarketThreshold } from "../jobs/marketScheduler.js";
 
 const addMarketData = asyncHandler(async (req, res) => {
 
@@ -72,10 +73,86 @@ const getMarketById = asyncHandler(async (req, res) => {
     });
 });
 
+// **NEW: Get market status with threshold analysis**
+const getMarketStatus = asyncHandler(async (req, res) => {
+    const { marketId } = req.params;
+    
+    const market = await Market.findById(marketId);
+    
+    if (!market) {
+        return res.status(404).json({
+            success: false,
+            message: "Market not found"
+        });
+    }
+
+    // Calculate threshold proximity
+    const thresholdDistance = market.threshold - market.yesPrice;
+    const thresholdPercentage = (market.yesPrice / market.threshold) * 100;
+    
+    return res.status(200).json({
+        success: true,
+        market: {
+            _id: market._id,
+            question: market.question,
+            yesPrice: market.yesPrice,
+            noPrice: market.noPrice,
+            threshold: market.threshold,
+            status: market.status,
+            expiry: market.expiry,
+            result: market.result,
+            totalYesAmount: market.totalYesAmount,
+            totalNoAmount: market.totalNoAmount
+        },
+        thresholdAnalysis: {
+            distanceToThreshold: thresholdDistance,
+            percentageOfThreshold: Math.round(thresholdPercentage * 100) / 100,
+            willAutoSettle: market.yesPrice >= market.threshold,
+            timeToExpiry: market.expiry > new Date() ? 
+                Math.ceil((market.expiry - new Date()) / (1000 * 60 * 60 * 24)) : 0, // days
+            status: market.yesPrice >= market.threshold ? "THRESHOLD_REACHED" : 
+                   market.status === "expired" ? "EXPIRED" : "ACTIVE"
+        }
+    });
+});
+
+// **NEW: Manually trigger threshold check**
+const checkThreshold = asyncHandler(async (req, res) => {
+    const { marketId } = req.params;
+    
+    const market = await Market.findById(marketId);
+    
+    if (!market) {
+        return res.status(404).json({
+            success: false,
+            message: "Market not found"
+        });
+    }
+
+    if (market.status !== "active") {
+        return res.status(400).json({
+            success: false,
+            message: "Market is not active"
+        });
+    }
+
+    const wasTriggered = await checkMarketThreshold(marketId);
+    
+    return res.status(200).json({
+        success: true,
+        message: wasTriggered ? "Threshold reached - market auto-settled!" : "Threshold not reached",
+        thresholdTriggered: wasTriggered,
+        currentPrice: market.yesPrice,
+        threshold: market.threshold
+    });
+});
+
 export { 
     addMarketData,
     getActiveMarkets,
-    getMarketById
+    getMarketById,
+    getMarketStatus,
+    checkThreshold
  };
 
 

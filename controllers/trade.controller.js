@@ -8,6 +8,7 @@ import {
     emitUserBalanceUpdate, 
     emitUserTradeExecuted 
 } from "../utils/websocket.js";
+import { checkMarketThreshold } from "../jobs/marketScheduler.js";
 
 // Helper function to calculate platform profit potential
 const calculatePlatformProfit = (yesAmount, yesValue, noAmount, noValue) => {
@@ -235,6 +236,12 @@ const executeTrade = async(marketId, newTrade) => {
             profitIfNoWins,
             worstCaseProfit
         });
+
+        // **NEW: Check if threshold reached after price update**
+        const thresholdTriggered = await checkMarketThreshold(marketId);
+        if (thresholdTriggered) {
+            console.log(`🎯 Market auto-settled due to threshold after trade execution!`);
+        }
 
         // Notify user of new trade execution
         emitUserTradeExecuted(newTrade.user.toString(), {

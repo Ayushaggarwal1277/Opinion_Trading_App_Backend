@@ -73,15 +73,30 @@ cron.schedule("* * * * *", async () => {
         totalNoAmount: market.totalNoAmount
       });
       
-      // Check if market has expired
-      if (market.expiry <= now) {
-        console.log(`Expiring market: ${market.question} - Expired at: ${market.expiry}`);
+      // **NEW FEATURE: Check threshold-based auto-settlement**
+      // If YES price goes above threshold, trigger immediate settlement
+      let shouldAutoSettle = false;
+      let autoSettleReason = "";
+      
+      if (market.yesPrice >= market.threshold) {
+        shouldAutoSettle = true;
+        autoSettleReason = `YES price (₹${market.yesPrice}) reached threshold (₹${market.threshold})`;
+        console.log(`🚨 THRESHOLD TRIGGERED: ${market.question} - ${autoSettleReason}`);
+      }
+      
+      // Check if market has expired OR threshold reached
+      if (market.expiry <= now || shouldAutoSettle) {
+        const expiryReason = shouldAutoSettle ? autoSettleReason : `Time expired at: ${market.expiry}`;
+        console.log(`Expiring market: ${market.question} - ${expiryReason}`);
         market.status = "expired";
         
-        // Emit market expiry notification
+        // Emit market expiry notification with reason
         emitMarketExpired(market._id.toString(), {
           question: market.question,
-          expiry: market.expiry
+          expiry: market.expiry,
+          reason: expiryReason,
+          autoSettled: shouldAutoSettle,
+          thresholdTriggered: shouldAutoSettle
         });
         
         // Handle pending trades - refund users
@@ -152,30 +167,58 @@ cron.schedule("* * * * *", async () => {
     for (let market of marketsToSettle) {
       console.log(`Settling market: ${market.question}`);
 
-      let temp;
-      try {
-        const res = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=28.625&longitude=77.25&current_weather=true`);
-        const data = await res.json();
-        temp = data.current_weather.temperature;
-        console.log(`Current temperature: ${temp}°C, Threshold: ${market.threshold}°C`);
-      } catch (err) {
-        console.error("Failed to fetch real-world data", err);
-        continue; // skip this market for now
-      }
+      let result;
+      let settlementData = {};
 
-      // Determine result based on temperature
-      const result = temp >= market.threshold ? "YES" : "NO";
+      // **ENHANCED SETTLEMENT LOGIC**
+      // Check if market was auto-settled due to threshold or expired naturally
+      const wasThresholdTriggered = market.yesPrice >= market.threshold;
+      
+      if (wasThresholdTriggered) {
+        // Threshold-based settlement: YES wins automatically
+        result = "YES";
+        settlementData = {
+          type: "threshold",
+          yesPrice: market.yesPrice,
+          threshold: market.threshold,
+          reason: `YES price reached ₹${market.yesPrice} (threshold: ₹${market.threshold})`
+        };
+        console.log(`🎯 Threshold settlement: ${market.question} - YES WINS (price: ₹${market.yesPrice})`);
+      } else {
+        // Time-based settlement: Use real-world data (temperature)
+        let temp;
+        try {
+          const res = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=28.625&longitude=77.25&current_weather=true`);
+          const data = await res.json();
+          temp = data.current_weather.temperature;
+          console.log(`Current temperature: ${temp}°C, Threshold: ${market.threshold}°C`);
+        } catch (err) {
+          console.error("Failed to fetch real-world data", err);
+          continue; // skip this market for now
+        }
+
+        // Determine result based on temperature
+        result = temp >= market.threshold ? "YES" : "NO";
+        settlementData = {
+          type: "time_based",
+          temperature: temp,
+          threshold: market.threshold,
+          reason: `Market expired - Temperature: ${temp}°C ${temp >= market.threshold ? '>=' : '<'} ${market.threshold}°C`
+        };
+        console.log(`⏰ Time-based settlement: ${market.question} - ${result} WINS (temp: ${temp}°C)`);
+      }
 
       // Update market with result
       market.result = result;
       await market.save();
 
-      // Emit market settlement notification
+      // Emit market settlement notification with enhanced data
       emitMarketSettled(market._id.toString(), {
         result: result,
         question: market.question,
-        temperature: temp,
-        threshold: market.threshold
+        settlementType: settlementData.type,
+        reason: settlementData.reason,
+        ...settlementData // spread temperature/threshold/yesPrice data
       });
 
       // Process executed trades and calculate winnings
@@ -319,3 +362,73 @@ cron.schedule("* * * * *", async () => {
     console.error("Error in market settlement scheduler:", error);
   }
 });
+
+// **NEW FUNCTION: Check threshold immediately after trade execution**
+export const checkMarketThreshold = async (marketId) => {
+  try {
+    const market = await Market.findById(marketId);
+    if (!market || market.status !== "active") return;
+
+    console.log(`🔍 Checking threshold for market: ${market.question} (YES: ₹${market.yesPrice}, Threshold: ₹${market.threshold})`);
+
+    if (market.yesPrice >= market.threshold) {
+      console.log(`🚨 IMMEDIATE THRESHOLD SETTLEMENT: ${market.question} - YES price (₹${market.yesPrice}) >= threshold (₹${market.threshold})`);
+      
+      // Mark market as expired for immediate settlement
+      market.status = "expired";
+      await market.save();
+
+      // Emit immediate expiry notification
+      emitMarketExpired(market._id.toString(), {
+        question: market.question,
+        expiry: market.expiry,
+        reason: `YES price (₹${market.yesPrice}) reached threshold (₹${market.threshold})`,
+        autoSettled: true,
+        thresholdTriggered: true,
+        immediate: true
+      });
+
+      // Handle pending trades - refund users immediately
+      const pendingTrades = await Trade.find({ 
+        market: market._id, 
+        status: "PENDING" 
+      }).populate('user');
+
+      for (let trade of pendingTrades) {
+        const refundAmount = trade.side === "buy" ? trade.amount * trade.price : trade.amount * (10 - trade.price);
+        trade.user.balance += refundAmount;
+        await trade.user.save();
+        
+        emitUserBalanceUpdate(trade.user._id.toString(), {
+          newBalance: trade.user.balance,
+          change: refundAmount,
+          reason: `Threshold reached - trade refunded`
+        });
+
+        emitUserTradeRefunded(trade.user._id.toString(), {
+          trade: {
+            _id: trade._id,
+            option: trade.option,
+            side: trade.side,
+            amount: trade.amount,
+            price: trade.price,
+            marketId: market._id
+          },
+          refundAmount: refundAmount,
+          reason: "Threshold reached - market auto-settled"
+        });
+        
+        trade.status = "CANCELLED";
+        await trade.save();
+      }
+
+      console.log(`✅ Market ${market.question} auto-expired due to threshold. ${pendingTrades.length} pending trades cancelled.`);
+      return true; // Threshold was triggered
+    }
+    
+    return false; // Threshold not reached
+  } catch (error) {
+    console.error("Error checking market threshold:", error);
+    return false;
+  }
+};
