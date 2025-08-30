@@ -75,6 +75,19 @@ export const emitNewTrade = (marketId, tradeData) => {
   }
 };
 
+// Emit order book update when trades are partially executed
+export const emitOrderBookUpdate = (marketId, updateData) => {
+  if (io) {
+    io.to(`market-${marketId}`).emit('market:orderBookUpdate', {
+      marketId,
+      updateType: updateData.type, // 'partial_execution', 'new_trade', 'trade_cancelled'
+      affectedTrades: updateData.trades,
+      timestamp: new Date()
+    });
+    console.log(`Order book update sent for market ${marketId}: ${updateData.type}`);
+  }
+};
+
 export const emitMarketExpired = (marketId, marketData) => {
   if (io) {
     io.to(`market-${marketId}`).emit('market:expired', {

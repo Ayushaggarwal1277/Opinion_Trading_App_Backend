@@ -6,7 +6,8 @@ import {
     emitMarketPriceUpdate, 
     emitNewTrade, 
     emitUserBalanceUpdate, 
-    emitUserTradeExecuted 
+    emitUserTradeExecuted,
+    emitOrderBookUpdate
 } from "../utils/websocket.js";
 import { checkMarketThreshold } from "../jobs/marketScheduler.js";
 
@@ -292,6 +293,18 @@ const executeTrade = async(marketId, newTrade) => {
             executed: true,
             totalCollected: totalExecutedValue,
             partialExecutions: executionsThisRound.length
+        });
+
+        // Emit order book update for partial executions
+        emitOrderBookUpdate(marketId, {
+            type: 'partial_execution',
+            trades: executionsThisRound.map(exec => ({
+                yesTradeId: exec.yesTradeId,
+                noTradeId: exec.noTradeId,
+                executedAmount: exec.amount,
+                yesPrice: exec.yesPrice,
+                noPrice: exec.noPrice
+            }))
         });
 
         // Check if threshold reached after price update
@@ -589,27 +602,54 @@ const getOrderBook = asyncHandler(async (req, res) => {
     const { marketId } = req.params;
 
     try {
-        // Get all pending trades for this market
-        const pendingTrades = await Trade.find({
+        // Get all pending and partially executed trades for this market
+        const activeTrades = await Trade.find({
             market: marketId,
-            status: "PENDING"
+            status: { $in: ["PENDING", "PARTIALLY_EXECUTED"] }
         }).sort({ price: -1 }); // Sort by price descending
 
+        // Process trades to show remaining amounts
+        const processedTrades = activeTrades.map(trade => {
+            let remainingAmount;
+            
+            if (trade.status === "PENDING") {
+                // For pending trades, show full amount
+                remainingAmount = trade.amount;
+            } else if (trade.status === "PARTIALLY_EXECUTED") {
+                // For partially executed trades, show remaining amount
+                remainingAmount = trade.amount - (trade.executedAmount || 0);
+            }
+
+            return {
+                ...trade.toObject(),
+                remainingAmount: remainingAmount,
+                isPartiallyExecuted: trade.status === "PARTIALLY_EXECUTED"
+            };
+        }).filter(trade => trade.remainingAmount > 0); // Only show trades with remaining amount
+
         // Group trades by option and side
-        const yesOrders = pendingTrades
+        const yesOrders = processedTrades
             .filter(trade => trade.option === "yes" && trade.side === "buy")
             .map(trade => ({
                 price: trade.price,
-                quantity: trade.amount,
-                id: trade._id
+                quantity: trade.remainingAmount, // Show remaining amount, not original amount
+                originalQuantity: trade.amount, // Keep original for reference
+                executedQuantity: trade.executedAmount || 0,
+                id: trade._id,
+                status: trade.status,
+                isPartiallyExecuted: trade.isPartiallyExecuted
             }));
 
-        const noOrders = pendingTrades
+        const noOrders = processedTrades
             .filter(trade => trade.option === "no" && trade.side === "buy")
             .map(trade => ({
                 price: trade.price,
-                quantity: trade.amount,
-                id: trade._id
+                quantity: trade.remainingAmount, // Show remaining amount, not original amount
+                originalQuantity: trade.amount, // Keep original for reference
+                executedQuantity: trade.executedAmount || 0,
+                id: trade._id,
+                status: trade.status,
+                isPartiallyExecuted: trade.isPartiallyExecuted
             }));
 
         return res.status(200).json({
@@ -617,7 +657,8 @@ const getOrderBook = asyncHandler(async (req, res) => {
             data: {
                 yesOrders,
                 noOrders,
-                totalOrders: pendingTrades.length
+                totalOrders: processedTrades.length,
+                partiallyExecutedCount: processedTrades.filter(t => t.isPartiallyExecuted).length
             }
         });
 
@@ -642,18 +683,26 @@ const getUserOrders = asyncHandler(async (req, res) => {
         }).populate('market', 'question yesPrice noPrice')
           .sort({ createdAt: -1 });
 
-        const orders = userTrades.map(trade => ({
-            _id: trade._id,
-            option: trade.option,
-            side: trade.side,
-            amount: trade.amount,
-            price: trade.price,
-            status: trade.status,
-            executePrice: trade.executePrice,
-            executedAmount: trade.executedAmount,
-            createdAt: trade.createdAt,
-            market: trade.market
-        }));
+        const orders = userTrades.map(trade => {
+            const remainingAmount = trade.status === "PARTIALLY_EXECUTED" 
+                ? trade.amount - (trade.executedAmount || 0) 
+                : (trade.status === "PENDING" ? trade.amount : 0);
+
+            return {
+                _id: trade._id,
+                option: trade.option,
+                side: trade.side,
+                amount: trade.amount,
+                price: trade.price,
+                status: trade.status,
+                executePrice: trade.executePrice,
+                executedAmount: trade.executedAmount || 0,
+                remainingAmount: remainingAmount,
+                isPartiallyExecuted: trade.status === "PARTIALLY_EXECUTED",
+                createdAt: trade.createdAt,
+                market: trade.market
+            };
+        });
 
         return res.status(200).json({
             success: true,
