@@ -188,17 +188,17 @@ const executeTrade = async(marketId, newTrade) => {
 
             if (noRemainingAmount <= 0) continue;
 
-            // STRICT CHECK: Only execute if pair generates PROFIT (not just break-even)
+            // CHECK: Execute if pair generates profit OR breaks even (>= 10)
             const pairTotal = yesTrade.price + noTrade.price;
-            if (pairTotal > 10) { // Must be > 10 for guaranteed profit
+            if (pairTotal >= 10) { // Must be >= 10 (break-even or profit)
                 const executionAmount = Math.min(yesRemainingAmount, noRemainingAmount);
                 const executionValue = executionAmount * pairTotal;
                 const platformProfit = executionValue - (executionAmount * 10);
 
-                console.log(`💰 PROFITABLE PAIR FOUND:
+                console.log(`💰 PROFITABLE/BREAK-EVEN PAIR FOUND:
                     YES: ${executionAmount} shares at ₹${yesTrade.price}
                     NO: ${executionAmount} shares at ₹${noTrade.price}
-                    Pair total: ₹${pairTotal} (> ₹10)
+                    Pair total: ₹${pairTotal} (>= ₹10)
                     Platform profit: ₹${platformProfit}`);
 
                 bestExecutions.push({
