@@ -82,176 +82,176 @@ const executeTrade = async(marketId, newTrade) => {
     const market = await Market.findById(marketId);
     if(!market) return;
 
-    // **NEW SMART EXECUTION LOGIC**
-    // Platform acts as market maker - execute trades when profitable
+    // **IMPROVED EXECUTION LOGIC** - Consider all platform exposure
+    // Platform should calculate total exposure including executed + pending + new trade
     
-    // Get all pending trades for this market
-    const pendingTrades = await Trade.find({
-        market: marketId,
-        status: "PENDING"
+    // Get ALL trades for this market (executed + pending)
+    const allExistingTrades = await Trade.find({
+        market: marketId
     });
 
-    // **SMART PAIR-WISE EXECUTION** - Execute profitable combinations immediately
-    // Your scenario: YES ₹9 + NO ₹9 should execute (₹8 profit), YES ₹2 stays pending
-    
-    // Get all pending trades and separate by option
-    const allTrades = [...pendingTrades, newTrade];
-    const yesTrades = allTrades.filter(t => t.option === "yes").sort((a, b) => b.price - a.price); // Sorting YES trades by price (high to low)
-    const noTrades = allTrades.filter(t => t.option === "no").sort((a, b) => b.price - a.price);
+    // Separate executed and pending trades
+    const executedTrades = allExistingTrades.filter(t => t.status === "EXECUTED");
+    const pendingTrades = allExistingTrades.filter(t => t.status === "PENDING");
 
-    console.log(`📊 Available trades:
-        YES: ${yesTrades.map(t => `₹${t.price}`).join(', ')}
-        NO: ${noTrades.map(t => `₹${t.price}`).join(', ')}`);
+    // Calculate current platform position
+    let totalYesShares = 0;
+    let totalYesValue = 0;
+    let totalNoShares = 0;
+    let totalNoValue = 0;
 
-    // Find and execute profitable pairs
-    let tradesToExecute = [];
-    let totalProfit = 0;
-    
-    // Create a copy to track available trades
-    let availableYes = [...yesTrades];
-    let availableNo = [...noTrades];
-
-    // Try to match YES and NO trades for profit
-    for (let i = 0; i < availableYes.length; i++) {
-        const yTrade = availableYes[i];
-        if (!yTrade) continue; // Already used
-        
-        for (let j = 0; j < availableNo.length; j++) {
-            const nTrade = availableNo[j];
-            if (!nTrade) continue; // Already used
-            
-            // Calculate profit for this pair (assuming equal amounts for simplicity)
-            const minAmount = Math.min(yTrade.amount, nTrade.amount);
-            const collected = (minAmount * yTrade.price) + (minAmount * nTrade.price);
-            const maxPayout = minAmount * 10; // Winner gets ₹10 per share
-            const profit = collected - maxPayout;
-            
-            console.log(`🔍 Pair check: YES ₹${yTrade.price} + NO ₹${nTrade.price} = ₹${collected} collected, payout ₹${maxPayout}, profit ₹${profit}`);
-            
-            if (profit >= 0) {
-                // This pair is profitable or break-even (no loss) - execute it
-                tradesToExecute.push(yTrade, nTrade);
-                totalProfit += profit;
-                
-                // Mark as used
-                availableYes[i] = null;
-                availableNo[j] = null;
-                
-                console.log(`✅ Executing pair! Profit/Break-even: ₹${profit}`);
-                break; // Move to next YES trade
-            }
+    // Add executed trades to platform position
+    executedTrades.forEach(trade => {
+        if (trade.option === "yes") {
+            totalYesShares += trade.executedAmount;
+            totalYesValue += trade.executedAmount * trade.executePrice;
+        } else {
+            totalNoShares += trade.executedAmount;
+            totalNoValue += trade.executedAmount * trade.executePrice;
         }
+    });
+
+    // Add pending trades to potential position
+    pendingTrades.forEach(trade => {
+        if (trade.option === "yes") {
+            totalYesShares += trade.amount;
+            totalYesValue += trade.amount * trade.price;
+        } else {
+            totalNoShares += trade.amount;
+            totalNoValue += trade.amount * trade.price;
+        }
+    });
+
+    // Add new trade to calculate new total position
+    if (newTrade.option === "yes") {
+        totalYesShares += newTrade.amount;
+        totalYesValue += newTrade.amount * newTrade.price;
+    } else {
+        totalNoShares += newTrade.amount;
+        totalNoValue += newTrade.amount * newTrade.price;
     }
 
-    // Execute profitable pairs immediately
-    if (tradesToExecute.length > 0) {
-        console.log(`🚀 EXECUTING ${tradesToExecute.length} TRADES with total profit ₹${totalProfit}!`);
-        
-        let executedYesAmount = 0;
-        let executedNoAmount = 0;
-        let executedYesValue = 0;
-        let executedNoValue = 0;
-        
-        for (let trade of tradesToExecute) {
-            trade.status = "EXECUTED";
-            trade.executePrice = trade.price;
-            trade.executedAmount = trade.amount;
-            await trade.save();
+    // Calculate platform's total exposure and profit scenarios
+    const totalCollected = totalYesValue + totalNoValue;
+    const payoutIfYesWins = totalYesShares * 10;
+    const payoutIfNoWins = totalNoShares * 10;
+    const profitIfYesWins = totalCollected - payoutIfYesWins;
+    const profitIfNoWins = totalCollected - payoutIfNoWins;
+    const worstCaseProfit = Math.min(profitIfYesWins, profitIfNoWins);
 
-            if (trade.option === "yes") {
-                executedYesAmount += trade.amount;
-                executedYesValue += trade.amount * trade.price;
-            } else {
-                executedNoAmount += trade.amount;
-                executedNoValue += trade.amount * trade.price;
+    console.log(`💰 Platform Exposure Analysis:
+        Total Collected: ₹${totalCollected}
+        YES Shares: ${totalYesShares} (payout ₹${payoutIfYesWins} if YES wins)
+        NO Shares: ${totalNoShares} (payout ₹${payoutIfNoWins} if NO wins)
+        Profit if YES wins: ₹${profitIfYesWins}
+        Profit if NO wins: ₹${profitIfNoWins}
+        Worst case profit: ₹${worstCaseProfit}`);
+
+    // Execute new trade if platform doesn't lose money in any scenario
+    if (worstCaseProfit >= 0) {
+        console.log(`🚀 EXECUTING TRADE - Platform guaranteed no loss! (Worst case: ₹${worstCaseProfit})`);
+        
+        // Execute the new trade
+        newTrade.status = "EXECUTED";
+        newTrade.executePrice = newTrade.price;
+        newTrade.executedAmount = newTrade.amount;
+        await newTrade.save();
+
+        // Also execute any remaining pending trades since they're all profitable now
+        if (pendingTrades.length > 0) {
+            console.log(`🔄 Also executing ${pendingTrades.length} pending trades...`);
+            for (let pendingTrade of pendingTrades) {
+                pendingTrade.status = "EXECUTED";
+                pendingTrade.executePrice = pendingTrade.price;
+                pendingTrade.executedAmount = pendingTrade.amount;
+                await pendingTrade.save();
+
+                // Notify user of execution
+                emitUserTradeExecuted(pendingTrade.user.toString(), {
+                    _id: pendingTrade._id,
+                    option: pendingTrade.option,
+                    amount: pendingTrade.amount,
+                    price: pendingTrade.price,
+                    executePrice: pendingTrade.price,
+                    status: "EXECUTED",
+                    marketId: marketId
+                });
             }
-
-            // Notify user of execution
-            emitUserTradeExecuted(trade.user.toString(), {
-                _id: trade._id,
-                option: trade.option,
-                amount: trade.amount,
-                price: trade.price,
-                executePrice: trade.price,
-                status: "EXECUTED",
-                marketId: marketId
-            });
         }
 
-        // Update market prices based on executed volume - MAKE THEM COMPLEMENTARY
-        if (executedYesAmount > 0 && executedNoAmount > 0) {
-            // Both YES and NO trades executed - calculate based on weighted average
-            const avgYesPrice = executedYesValue / executedYesAmount;
-            const avgNoPrice = executedNoValue / executedNoAmount;
+        // Update market prices based on executed trades
+        const allExecutedTrades = await Trade.find({
+            market: marketId,
+            status: "EXECUTED"
+        });
+
+        if (allExecutedTrades.length > 0) {
+            let totalYesVol = 0, totalYesVal = 0, totalNoVol = 0, totalNoVal = 0;
             
-            // Use the price with higher volume as the primary price
-            if (executedYesAmount >= executedNoAmount) {
-                // More YES volume - set YES price, make NO complementary
-                market.yesPrice = Math.max(0.5, Math.min(9.5, avgYesPrice));
+            allExecutedTrades.forEach(trade => {
+                if (trade.option === "yes") {
+                    totalYesVol += trade.executedAmount;
+                    totalYesVal += trade.executedAmount * trade.executePrice;
+                } else {
+                    totalNoVol += trade.executedAmount;
+                    totalNoVal += trade.executedAmount * trade.executePrice;
+                }
+            });
+
+            // Update market with volume-weighted average prices (complementary)
+            if (totalYesVol > 0 && totalNoVol > 0) {
+                const avgYesPrice = totalYesVal / totalYesVol;
+                const avgNoPrice = totalNoVal / totalNoVol;
+                
+                if (totalYesVol >= totalNoVol) {
+                    market.yesPrice = Math.max(0.5, Math.min(9.5, avgYesPrice));
+                    market.noPrice = 10 - market.yesPrice;
+                } else {
+                    market.noPrice = Math.max(0.5, Math.min(9.5, avgNoPrice));
+                    market.yesPrice = 10 - market.noPrice;
+                }
+            } else if (totalYesVol > 0) {
+                market.yesPrice = Math.max(0.5, Math.min(9.5, totalYesVal / totalYesVol));
                 market.noPrice = 10 - market.yesPrice;
-            } else {
-                // More NO volume - set NO price, make YES complementary  
-                market.noPrice = Math.max(0.5, Math.min(9.5, avgNoPrice));
+            } else if (totalNoVol > 0) {
+                market.noPrice = Math.max(0.5, Math.min(9.5, totalNoVal / totalNoVol));
                 market.yesPrice = 10 - market.noPrice;
             }
-        } else if (executedYesAmount > 0) {
-            // Only YES trades executed
-            const avgYesPrice = executedYesValue / executedYesAmount;
-            market.yesPrice = Math.max(0.5, Math.min(9.5, avgYesPrice));
-            market.noPrice = 10 - market.yesPrice;
-        } else if (executedNoAmount > 0) {
-            // Only NO trades executed
-            const avgNoPrice = executedNoValue / executedNoAmount;
-            market.noPrice = Math.max(0.5, Math.min(9.5, avgNoPrice));
-            market.yesPrice = 10 - market.noPrice;
-        }
-        
-        // Ensure prices are always complementary and within bounds
-        if (market.yesPrice + market.noPrice !== 10) {
-            const total = market.yesPrice + market.noPrice;
-            market.yesPrice = (market.yesPrice / total) * 10;
-            market.noPrice = 10 - market.yesPrice;
-        }
-        
-        // Update total amounts
-        market.totalYesAmount = (market.totalYesAmount || 0) + executedYesAmount;
-        market.totalNoAmount = (market.totalNoAmount || 0) + executedNoAmount;
 
-        await market.save();
+            market.totalYesAmount = totalYesVol;
+            market.totalNoAmount = totalNoVol;
+            await market.save();
+        }
 
-        // Emit market update
+        // Emit market update with execution details
         emitMarketPriceUpdate(marketId, {
             yesPrice: market.yesPrice,
             noPrice: market.noPrice,
             totalYesAmount: market.totalYesAmount,
             totalNoAmount: market.totalNoAmount,
             executed: true,
-            profit: totalProfit,
-            executedPairs: tradesToExecute.length / 2
+            totalCollected,
+            profitIfYesWins,
+            profitIfNoWins,
+            worstCaseProfit
         });
 
-        // Check if new trade was executed or still pending
-        const wasNewTradeExecuted = tradesToExecute.some(t => t._id.toString() === newTrade._id.toString());
-        
-        if (!wasNewTradeExecuted) {
-            // New trade wasn't part of profitable pairs, emit as pending
-            emitNewTrade(marketId, {
-                _id: newTrade._id,
-                option: newTrade.option,
-                side: newTrade.side,
-                amount: newTrade.amount,
-                price: newTrade.price,
-                status: "PENDING",
-                user: newTrade.user,
-                timestamp: newTrade.createdAt
-            });
-        }
+        // Notify user of new trade execution
+        emitUserTradeExecuted(newTrade.user.toString(), {
+            _id: newTrade._id,
+            option: newTrade.option,
+            amount: newTrade.amount,
+            price: newTrade.price,
+            executePrice: newTrade.price,
+            status: "EXECUTED",
+            marketId: marketId
+        });
 
-        return wasNewTradeExecuted; // Return whether new trade was executed
+        return true; // Trade was executed
     } else {
-        console.log(`⏳ NO PROFITABLE PAIRS FOUND - All trades remain pending`);
+        console.log(`⏳ TRADE PENDING - Platform would lose money (worst case: ₹${worstCaseProfit})`);
         
-        // Emit new trade to order book but don't execute yet
+        // Keep trade as pending
         emitNewTrade(marketId, {
             _id: newTrade._id,
             option: newTrade.option,
@@ -263,7 +263,7 @@ const executeTrade = async(marketId, newTrade) => {
             timestamp: newTrade.createdAt
         });
 
-        return false; // Indicate trades are still pending
+        return false; // Trade is pending
     }
 };
 
