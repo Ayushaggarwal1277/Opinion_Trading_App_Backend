@@ -39,7 +39,7 @@ const tradeSchema = new mongoose.Schema({
     },
     status:{
         type : String,
-        enum : ["EXECUTED", "PENDING", "CANCELLED", "SETTLED"],
+        enum : ["EXECUTED", "PENDING", "CANCELLED", "SETTLED", "PARTIALLY_EXECUTED"],
         default : "PENDING",
     }
 
