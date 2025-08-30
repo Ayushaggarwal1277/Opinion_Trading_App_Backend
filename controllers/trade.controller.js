@@ -29,53 +29,36 @@ const calculatePlatformProfit = (yesAmount, yesValue, noAmount, noValue) => {
     };
 };
 
-// Helper function to update market prices based on executed trades
+// Helper: update market prices based on executed trades (volume-weighted; complementary)
 const updateMarketPrices = async (marketId) => {
     const market = await Market.findById(marketId);
     if (!market) return;
 
-    // Get all executed trades for this market
-    const executedTrades = await Trade.find({
-        market: marketId,
-        status: "EXECUTED"
-    });
+    const executedTrades = await Trade.find({ market: marketId, status: { $in: ["EXECUTED", "PARTIALLY_EXECUTED"] } });
 
-    let totalYesVolume = 0;
-    let totalYesValue = 0;
-    let totalNoVolume = 0;
-    let totalNoValue = 0;
-
-    // Calculate weighted average prices based on executed trades
+    let totalYesVolume = 0, totalYesValue = 0, totalNoVolume = 0, totalNoValue = 0;
     executedTrades.forEach(trade => {
-        if (trade.option === "yes" && trade.side === "buy") {
-            totalYesVolume += trade.executedAmount;
-            totalYesValue += trade.executedAmount * trade.executePrice;
-        } else if (trade.option === "no" && trade.side === "buy") {
-            totalNoVolume += trade.executedAmount;
-            totalNoValue += trade.executedAmount * trade.executePrice;
+        const execAmt = trade.executedAmount || 0;
+        if (trade.option === "yes" && execAmt > 0) {
+            totalYesVolume += execAmt;
+            totalYesValue += execAmt * trade.executePrice;
+        } else if (trade.option === "no" && execAmt > 0) {
+            totalNoVolume += execAmt;
+            totalNoValue += execAmt * trade.executePrice;
         }
     });
 
-    // Update prices based on weighted average, default to 5 if no trades
     if (totalYesVolume > 0) {
         market.yesPrice = Math.max(0.5, Math.min(9.5, totalYesValue / totalYesVolume));
+        market.noPrice = 10 - market.yesPrice;
     }
-    
     if (totalNoVolume > 0) {
         market.noPrice = Math.max(0.5, Math.min(9.5, totalNoValue / totalNoVolume));
-    }
-
-    // Ensure prices are complementary (sum to 10) based on the more active side
-    if (totalYesVolume > totalNoVolume && totalYesVolume > 0) {
-        market.noPrice = 10 - market.yesPrice;
-    } else if (totalNoVolume > totalYesVolume && totalNoVolume > 0) {
         market.yesPrice = 10 - market.noPrice;
     }
 
-    // Update total amounts
     market.totalYesAmount = totalYesVolume;
     market.totalNoAmount = totalNoVolume;
-
     await market.save();
     return market;
 };
@@ -108,49 +91,49 @@ const executeTrade = async (marketId, newTrade) => {
 
   let matches = [];
 
-  // Try matching FIFO
+    // Try matching FIFO with safety (profit >= 0) allowing partials
   let i = 0, j = 0;
   while (i < yesPending.length && j < noPending.length) {
     const y = yesPending[i];
     const n = noPending[j];
     const yRemain = (y.amount - (y.executedAmount || 0));
     const nRemain = (n.amount - (n.executedAmount || 0));
-    const qty = Math.min(yRemain, nRemain);
+        const tryQty = Math.min(yRemain, nRemain);
 
-    // Tentative update
-    const newYesShares = yesShares + qty;
-    const newYesValue = yesValue + qty * y.price;
-    const newNoShares = noShares + qty;
-    const newNoValue = noValue + qty * n.price;
+        // Per-share profit delta when pairing these two
+        const delta = (y.price + n.price) - 10; // >=0 is always safe
+        let execQty = 0;
+        if (delta >= 0) {
+            execQty = tryQty;
+        } else {
+            // Current worst-case profit from executed so far
+            const currentCollected = yesValue + noValue;
+            const currentWorst = Math.min(currentCollected - yesShares * 10, currentCollected - noShares * 10);
+            const maxSafe = Math.floor(currentWorst / (-delta));
+            execQty = Math.max(0, Math.min(tryQty, maxSafe));
+        }
 
-    const totalCollected = newYesValue + newNoValue;
-    const payoutIfYes = newYesShares * 10;
-    const payoutIfNo = newNoShares * 10;
-    const worstProfit = Math.min(totalCollected - payoutIfYes, totalCollected - payoutIfNo);
+        if (execQty > 0) {
+            // Apply
+            matches.push({ yes: y, no: n, qty: execQty, yesPrice: y.price, noPrice: n.price });
+            yesShares += execQty; yesValue += execQty * y.price;
+            noShares += execQty; noValue += execQty * n.price;
 
-    if (worstProfit >= 0) {
-      // Safe execution
-      matches.push({ yes: y, no: n, qty, yesPrice: y.price, noPrice: n.price });
-      yesShares = newYesShares;
-      yesValue = newYesValue;
-      noShares = newNoShares;
-      noValue = newNoValue;
+            y.executedAmount = (y.executedAmount || 0) + execQty;
+            y.status = y.executedAmount >= y.amount ? "EXECUTED" : "PARTIALLY_EXECUTED";
+            n.executedAmount = (n.executedAmount || 0) + execQty;
+            n.status = n.executedAmount >= n.amount ? "EXECUTED" : "PARTIALLY_EXECUTED";
 
-      // Update remaining
-      y.executedAmount = (y.executedAmount || 0) + qty;
-      y.status = y.executedAmount >= y.amount ? "EXECUTED" : "PARTIALLY_EXECUTED";
-      n.executedAmount = (n.executedAmount || 0) + qty;
-      n.status = n.executedAmount >= n.amount ? "EXECUTED" : "PARTIALLY_EXECUTED";
-
-      if (y.executedAmount >= y.amount) i++;
-      if (n.executedAmount >= n.amount) j++;
-    } else {
-      // Stop if next match would cause loss
-      break;
-    }
+            if (y.executedAmount >= y.amount) i++;
+            if (n.executedAmount >= n.amount) j++;
+            // If we couldn't take full tryQty due to safety, stop (FIFO)
+            if (execQty < tryQty) break;
+        } else {
+            break;
+        }
   }
 
-  // Save executions
+    // Save executions
   for (const m of matches) {
     await Trade.findByIdAndUpdate(m.yes._id, {
       status: m.yes.status,
@@ -167,6 +150,61 @@ const executeTrade = async (marketId, newTrade) => {
 
     emitNewTrade(marketId, { ...m, status: "EXECUTED" });
   }
+
+    // HOUSE fallback: execute remaining of newTrade alone while profit stays >= 0
+    let remainingNew = (newTrade.amount - (newTrade.executedAmount || 0));
+    if (remainingNew > 0) {
+        const price = newTrade.price;
+        if (newTrade.option === "yes") {
+            const delta = price - 10; // per share
+            let execQty = 0;
+            if (delta >= 0) {
+                execQty = remainingNew;
+            } else {
+                const currentCollected = yesValue + noValue;
+                const currentWorst = Math.min(currentCollected - yesShares * 10, currentCollected - noShares * 10);
+                const maxSafe = Math.floor(currentWorst / (-delta));
+                execQty = Math.max(0, Math.min(remainingNew, maxSafe));
+            }
+            if (execQty > 0) {
+                yesShares += execQty; yesValue += execQty * price;
+                newTrade.executedAmount = (newTrade.executedAmount || 0) + execQty;
+                newTrade.executePrice = price;
+                newTrade.status = newTrade.executedAmount >= newTrade.amount ? "EXECUTED" : "PARTIALLY_EXECUTED";
+                await Trade.findByIdAndUpdate(newTrade._id, {
+                    executedAmount: newTrade.executedAmount,
+                    executePrice: price,
+                    status: newTrade.status,
+                    executedAt: new Date()
+                });
+                emitNewTrade(marketId, { _id: newTrade._id, option: "yes", amount: execQty, price, status: newTrade.status, house: true });
+            }
+        } else { // no
+            const delta = price - 10;
+            let execQty = 0;
+            if (delta >= 0) {
+                execQty = remainingNew;
+            } else {
+                const currentCollected = yesValue + noValue;
+                const currentWorst = Math.min(currentCollected - yesShares * 10, currentCollected - noShares * 10);
+                const maxSafe = Math.floor(currentWorst / (-delta));
+                execQty = Math.max(0, Math.min(remainingNew, maxSafe));
+            }
+            if (execQty > 0) {
+                noShares += execQty; noValue += execQty * price;
+                newTrade.executedAmount = (newTrade.executedAmount || 0) + execQty;
+                newTrade.executePrice = price;
+                newTrade.status = newTrade.executedAmount >= newTrade.amount ? "EXECUTED" : "PARTIALLY_EXECUTED";
+                await Trade.findByIdAndUpdate(newTrade._id, {
+                    executedAmount: newTrade.executedAmount,
+                    executePrice: price,
+                    status: newTrade.status,
+                    executedAt: new Date()
+                });
+                emitNewTrade(marketId, { _id: newTrade._id, option: "no", amount: execQty, price, status: newTrade.status, house: true });
+            }
+        }
+    }
 
   emitOrderBookUpdate(marketId);
   return matches.length > 0;
