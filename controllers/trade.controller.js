@@ -304,10 +304,10 @@ const executeTrade = async(marketId, newTrade) => {
     } 
     
     // **COMPREHENSIVE PLATFORM EXPOSURE CHECK**
-    // If no direct pairs found, check if new trade can execute without platform loss
-    console.log(`🔍 No direct pairs found. Checking comprehensive platform exposure...`);
+    // If no direct pairs found, check if ONLY the new trade can execute without platform loss
+    console.log(`🔍 No direct pairs found. Checking if new trade alone is safe to execute...`);
     
-    // Calculate current platform position from all executed trades
+    // Calculate current platform position from ONLY executed trades
     let currentYesShares = 0;
     let currentYesValue = 0;
     let currentNoShares = 0;
@@ -324,78 +324,48 @@ const executeTrade = async(marketId, newTrade) => {
         }
     });
 
-    // Add all pending trades to potential position
-    let potentialYesShares = currentYesShares;
-    let potentialYesValue = currentYesValue;
-    let potentialNoShares = currentNoShares;
-    let potentialNoValue = currentNoValue;
+    // Calculate position if ONLY the new trade is added (don't include pending trades)
+    let newYesShares = currentYesShares;
+    let newYesValue = currentYesValue;
+    let newNoShares = currentNoShares;
+    let newNoValue = currentNoValue;
 
-    pendingTrades.forEach(trade => {
-        if (trade.option === "yes") {
-            potentialYesShares += trade.amount;
-            potentialYesValue += trade.amount * trade.price;
-        } else {
-            potentialNoShares += trade.amount;
-            potentialNoValue += trade.amount * trade.price;
-        }
-    });
-
-    // Add new trade to calculate total exposure
+    // Add ONLY the new trade
     if (newTrade.option === "yes") {
-        potentialYesShares += newTrade.amount;
-        potentialYesValue += newTrade.amount * newTrade.price;
+        newYesShares += newTrade.amount;
+        newYesValue += newTrade.amount * newTrade.price;
     } else {
-        potentialNoShares += newTrade.amount;
-        potentialNoValue += newTrade.amount * newTrade.price;
+        newNoShares += newTrade.amount;
+        newNoValue += newTrade.amount * newTrade.price;
     }
 
-    // Calculate platform profit scenarios
-    const totalCollected = potentialYesValue + potentialNoValue;
-    const payoutIfYesWins = potentialYesShares * 10;
-    const payoutIfNoWins = potentialNoShares * 10;
+    // Calculate platform profit scenarios with ONLY the new trade added
+    const totalCollected = newYesValue + newNoValue;
+    const payoutIfYesWins = newYesShares * 10;
+    const payoutIfNoWins = newNoShares * 10;
     const profitIfYesWins = totalCollected - payoutIfYesWins;
     const profitIfNoWins = totalCollected - payoutIfNoWins;
     const worstCaseProfit = Math.min(profitIfYesWins, profitIfNoWins);
 
-    console.log(`💰 Comprehensive Platform Exposure Analysis:
+    console.log(`💰 Platform Exposure Analysis (Current + New Trade Only):
+        Current position: ${currentYesShares} YES, ${currentNoShares} NO
+        After new trade: ${newYesShares} YES, ${newNoShares} NO
         Total would be collected: ₹${totalCollected}
-        YES Shares: ${potentialYesShares} (payout ₹${payoutIfYesWins} if YES wins)
-        NO Shares: ${potentialNoShares} (payout ₹${payoutIfNoWins} if NO wins)
+        Payout if YES wins: ₹${payoutIfYesWins}
+        Payout if NO wins: ₹${payoutIfNoWins}
         Profit if YES wins: ₹${profitIfYesWins}
         Profit if NO wins: ₹${profitIfNoWins}
         Worst case profit: ₹${worstCaseProfit}`);
 
     // Execute new trade if platform doesn't lose money in worst case scenario
     if (worstCaseProfit >= 0) {
-        console.log(`🚀 EXECUTING SINGLE TRADE - Platform guaranteed no loss! (Worst case: ₹${worstCaseProfit})`);
+        console.log(`🚀 EXECUTING NEW TRADE - Platform guaranteed no loss! (Worst case: ₹${worstCaseProfit})`);
         
-        // Execute the new trade
+        // Execute ONLY the new trade (don't execute pending trades)
         newTrade.status = "EXECUTED";
         newTrade.executePrice = newTrade.price;
         newTrade.executedAmount = newTrade.amount;
         await newTrade.save();
-
-        // Also execute all pending trades since they're all profitable together
-        if (pendingTrades.length > 0) {
-            console.log(`🔄 Also executing ${pendingTrades.length} pending trades...`);
-            for (let pendingTrade of pendingTrades) {
-                pendingTrade.status = "EXECUTED";
-                pendingTrade.executePrice = pendingTrade.price;
-                pendingTrade.executedAmount = pendingTrade.amount;
-                await pendingTrade.save();
-
-                // Notify user of execution
-                emitUserTradeExecuted(pendingTrade.user.toString(), {
-                    _id: pendingTrade._id,
-                    option: pendingTrade.option,
-                    amount: pendingTrade.amount,
-                    price: pendingTrade.price,
-                    executePrice: pendingTrade.price,
-                    status: "EXECUTED",
-                    marketId: marketId
-                });
-            }
-        }
 
         // Update market prices based on all executed trades
         const allExecutedTrades = await Trade.find({
@@ -442,21 +412,22 @@ const executeTrade = async(marketId, newTrade) => {
             await market.save();
         }
 
-        // Emit market update
+        // Emit market update (single trade execution)
         emitMarketPriceUpdate(marketId, {
             yesPrice: market.yesPrice,
             noPrice: market.noPrice,
             totalYesAmount: market.totalYesAmount,
             totalNoAmount: market.totalNoAmount,
             executed: true,
-            totalCollected: totalCollected,
-            comprehensiveExecution: true
+            singleTradeExecution: true,
+            newTradeAmount: newTrade.amount,
+            newTradeOption: newTrade.option
         });
 
         // Check threshold after execution
         const thresholdTriggered = await checkMarketThreshold(marketId);
         if (thresholdTriggered) {
-            console.log(`🎯 Market auto-settled due to threshold after comprehensive execution!`);
+            console.log(`🎯 Market auto-settled due to threshold after single trade execution!`);
         }
 
         // Notify user of new trade execution
