@@ -52,7 +52,7 @@ const updateMarketPrices = async (marketId) => {
         market.yesPrice = Math.max(0.5, Math.min(9.5, totalYesValue / totalYesVolume));
         market.noPrice = 10 - market.yesPrice;
     }
-    if (totalNoVolume > 0) {
+    else if (totalNoVolume > 0) {
         market.noPrice = Math.max(0.5, Math.min(9.5, totalNoValue / totalNoVolume));
         market.yesPrice = 10 - market.noPrice;
     }
@@ -151,60 +151,65 @@ const executeTrade = async (marketId, newTrade) => {
     emitNewTrade(marketId, { ...m, status: "EXECUTED" });
   }
 
-    // HOUSE fallback: execute remaining of newTrade alone while profit stays >= 0
-    let remainingNew = (newTrade.amount - (newTrade.executedAmount || 0));
-    if (remainingNew > 0) {
-        const price = newTrade.price;
-        if (newTrade.option === "yes") {
-            const delta = price - 10; // per share
-            let execQty = 0;
-            if (delta >= 0) {
-                execQty = remainingNew;
-            } else {
-                const currentCollected = yesValue + noValue;
-                const currentWorst = Math.min(currentCollected - yesShares * 10, currentCollected - noShares * 10);
-                const maxSafe = Math.floor(currentWorst / (-delta));
-                execQty = Math.max(0, Math.min(remainingNew, maxSafe));
-            }
-            if (execQty > 0) {
-                yesShares += execQty; yesValue += execQty * price;
-                newTrade.executedAmount = (newTrade.executedAmount || 0) + execQty;
-                newTrade.executePrice = price;
-                newTrade.status = newTrade.executedAmount >= newTrade.amount ? "EXECUTED" : "PARTIALLY_EXECUTED";
-                await Trade.findByIdAndUpdate(newTrade._id, {
-                    executedAmount: newTrade.executedAmount,
-                    executePrice: price,
-                    status: newTrade.status,
-                    executedAt: new Date()
-                });
-                emitNewTrade(marketId, { _id: newTrade._id, option: "yes", amount: execQty, price, status: newTrade.status, house: true });
-            }
-        } else { // no
-            const delta = price - 10;
-            let execQty = 0;
-            if (delta >= 0) {
-                execQty = remainingNew;
-            } else {
-                const currentCollected = yesValue + noValue;
-                const currentWorst = Math.min(currentCollected - yesShares * 10, currentCollected - noShares * 10);
-                const maxSafe = Math.floor(currentWorst / (-delta));
-                execQty = Math.max(0, Math.min(remainingNew, maxSafe));
-            }
-            if (execQty > 0) {
-                noShares += execQty; noValue += execQty * price;
-                newTrade.executedAmount = (newTrade.executedAmount || 0) + execQty;
-                newTrade.executePrice = price;
-                newTrade.status = newTrade.executedAmount >= newTrade.amount ? "EXECUTED" : "PARTIALLY_EXECUTED";
-                await Trade.findByIdAndUpdate(newTrade._id, {
-                    executedAmount: newTrade.executedAmount,
-                    executePrice: price,
-                    status: newTrade.status,
-                    executedAt: new Date()
-                });
-                emitNewTrade(marketId, { _id: newTrade._id, option: "no", amount: execQty, price, status: newTrade.status, house: true });
+        // HOUSE fallback: execute remaining of newTrade one-by-one while worst-case profit stays >= 0
+        let remainingNew = (newTrade.amount - (newTrade.executedAmount || 0));
+        if (remainingNew > 0) {
+            const price = newTrade.price;
+            // Compute current worst-case = collected - 10*max(yesShares,noShares)
+            let currentWorst = (yesValue + noValue) - 10 * Math.max(yesShares, noShares);
+
+            const applyHouseFill = async (side) => {
+                // Calculate delta to worst-case for adding 1 share on given side
+                if (side === "yes") {
+                    const beforeMax = Math.max(yesShares, noShares);
+                    const afterMax = Math.max(yesShares + 1, noShares);
+                    const increaseMax = (afterMax - beforeMax) * 10; // 0 or 10
+                    const deltaWorst = price - increaseMax; // gain price, maybe raise max by 10
+                    if (currentWorst + deltaWorst >= 0) {
+                        // Apply
+                        yesShares += 1; yesValue += price; currentWorst += deltaWorst;
+                        newTrade.executedAmount = (newTrade.executedAmount || 0) + 1;
+                        newTrade.executePrice = price;
+                        newTrade.status = newTrade.executedAmount >= newTrade.amount ? "EXECUTED" : "PARTIALLY_EXECUTED";
+                        await Trade.findByIdAndUpdate(newTrade._id, {
+                            executedAmount: newTrade.executedAmount,
+                            executePrice: price,
+                            status: newTrade.status,
+                            executedAt: new Date()
+                        });
+                        emitNewTrade(marketId, { _id: newTrade._id, option: "yes", amount: 1, price, status: newTrade.status, house: true });
+                        return true;
+                    }
+                    return false;
+                } else { // no
+                    const beforeMax = Math.max(yesShares, noShares);
+                    const afterMax = Math.max(yesShares, noShares + 1);
+                    const increaseMax = (afterMax - beforeMax) * 10; // 0 or 10
+                    const deltaWorst = price - increaseMax;
+                    if (currentWorst + deltaWorst >= 0) {
+                        noShares += 1; noValue += price; currentWorst += deltaWorst;
+                        newTrade.executedAmount = (newTrade.executedAmount || 0) + 1;
+                        newTrade.executePrice = price;
+                        newTrade.status = newTrade.executedAmount >= newTrade.amount ? "EXECUTED" : "PARTIALLY_EXECUTED";
+                        await Trade.findByIdAndUpdate(newTrade._id, {
+                            executedAmount: newTrade.executedAmount,
+                            executePrice: price,
+                            status: newTrade.status,
+                            executedAt: new Date()
+                        });
+                        emitNewTrade(marketId, { _id: newTrade._id, option: "no", amount: 1, price, status: newTrade.status, house: true });
+                        return true;
+                    }
+                    return false;
+                }
+            };
+
+            while (remainingNew > 0) {
+                const ok = await applyHouseFill(newTrade.option);
+                if (!ok) break;
+                remainingNew -= 1;
             }
         }
-    }
 
   emitOrderBookUpdate(marketId);
   return matches.length > 0;
