@@ -96,32 +96,86 @@ const executeTrade = async(marketId, newTrade) => {
     const executedTrades = allExistingTrades.filter(t => t.status === "EXECUTED" || t.status === "PARTIALLY_EXECUTED");
     const pendingTrades = allExistingTrades.filter(t => t.status === "PENDING");
 
+    // **CORRECTED PARTIAL EXECUTION ALGORITHM**
+    // CRITICAL: Platform must NEVER be in a losing position
+    
     console.log(`📊 Current Market State:
         Executed/Partial trades: ${executedTrades.length}
         Pending trades: ${pendingTrades.length}
         New trade: ${newTrade.amount} ${newTrade.option.toUpperCase()} at ₹${newTrade.price}`);
 
-    // **PARTIAL EXECUTION ALGORITHM**
-    // Try to find profitable partial matches between pending trades of opposite types
-    const yesTradesAvailable = pendingTrades.filter(t => t.option === "yes");
-    const noTradesAvailable = pendingTrades.filter(t => t.option === "no");
+    // Calculate CURRENT platform exposure from executed trades only
+    let preYesShares = 0;
+    let preYesValue = 0;
+    let preNoShares = 0;
+    let preNoValue = 0;
 
-    // Add new trade to the appropriate list for matching
+    executedTrades.forEach(trade => {
+        const tradeAmount = trade.executedAmount || trade.amount;
+        if (trade.option === "yes") {
+            preYesShares += tradeAmount;
+            preYesValue += tradeAmount * trade.executePrice;
+        } else {
+            preNoShares += tradeAmount;
+            preNoValue += tradeAmount * trade.executePrice;
+        }
+    });
+
+    const currentCollected = preYesValue + preNoValue;
+    const currentPayoutIfYesWins = preYesShares * 10;
+    const currentPayoutIfNoWins = preNoShares * 10;
+    const currentProfitIfYesWins = currentCollected - currentPayoutIfYesWins;
+    const currentProfitIfNoWins = currentCollected - currentPayoutIfNoWins;
+    const currentWorstCase = Math.min(currentProfitIfYesWins, currentProfitIfNoWins);
+
+    console.log(`🔍 CURRENT Platform Position Analysis:
+        YES: ${preYesShares} shares, ₹${preYesValue} collected
+        NO: ${preNoShares} shares, ₹${preNoValue} collected
+        Total collected: ₹${currentCollected}
+        If YES wins: Pay ₹${currentPayoutIfYesWins}, Profit: ₹${currentProfitIfYesWins}
+        If NO wins: Pay ₹${currentPayoutIfNoWins}, Profit: ₹${currentProfitIfNoWins}
+        Current worst case: ₹${currentWorstCase}`);
+
+    if (currentWorstCase < 0) {
+        console.log(`🚨 CRITICAL: Platform is ALREADY in losing position (₹${currentWorstCase})!`);
+        console.log(`🛑 Rejecting new trade to prevent further losses.`);
+        
+        // Keep new trade as pending
+        emitNewTrade(marketId, {
+            _id: newTrade._id,
+            option: newTrade.option,
+            side: newTrade.side,
+            amount: newTrade.amount,
+            price: newTrade.price,
+            status: "PENDING",
+            user: newTrade.user,
+            timestamp: newTrade.createdAt,
+            reason: "Platform exposure exceeded"
+        });
+
+        return false; // Platform already losing, reject new trade
+    }
+
+    // Try to find profitable partial matches that maintain platform safety
+    const yesTradesAvailable = [...pendingTrades.filter(t => t.option === "yes")];
+    const noTradesAvailable = [...pendingTrades.filter(t => t.option === "no")];
+
+    // Add new trade to appropriate list
     if (newTrade.option === "yes") {
         yesTradesAvailable.push(newTrade);
     } else {
         noTradesAvailable.push(newTrade);
     }
 
-    // Sort by best prices for optimal matching (YES: highest price first, NO: lowest price first)
+    // Sort by best prices for optimal matching
     yesTradesAvailable.sort((a, b) => b.price - a.price);
     noTradesAvailable.sort((a, b) => a.price - b.price);
 
-    let executionsThisRound = [];
-    let totalExecutedValue = 0;
+    let bestExecutions = [];
+    let bestTotalValue = 0;
 
-    // **GREEDY MATCHING ALGORITHM**
-    // Match YES and NO trades optimally, allowing partial fills
+    // **SAFE GREEDY MATCHING ALGORITHM**
+    // Only execute pairs that guarantee platform profit
     for (let yesTradeIndex = 0; yesTradeIndex < yesTradesAvailable.length; yesTradeIndex++) {
         const yesTrade = yesTradesAvailable[yesTradeIndex];
         let yesRemainingAmount = yesTrade.remainingAmount || yesTrade.amount;
@@ -134,21 +188,20 @@ const executeTrade = async(marketId, newTrade) => {
 
             if (noRemainingAmount <= 0) continue;
 
-            // Check if this pair is profitable (YES price + NO price >= 10)
-            if (yesTrade.price + noTrade.price >= 10) {
-                // Calculate optimal execution amount (minimum of both remaining amounts)
+            // STRICT CHECK: Only execute if pair generates PROFIT (not just break-even)
+            const pairTotal = yesTrade.price + noTrade.price;
+            if (pairTotal > 10) { // Must be > 10 for guaranteed profit
                 const executionAmount = Math.min(yesRemainingAmount, noRemainingAmount);
-                const executionValue = executionAmount * (yesTrade.price + noTrade.price);
+                const executionValue = executionAmount * pairTotal;
                 const platformProfit = executionValue - (executionAmount * 10);
 
-                console.log(`🎯 PROFITABLE MATCH FOUND:
+                console.log(`💰 PROFITABLE PAIR FOUND:
                     YES: ${executionAmount} shares at ₹${yesTrade.price}
                     NO: ${executionAmount} shares at ₹${noTrade.price}
-                    Total collected: ₹${executionValue}
+                    Pair total: ₹${pairTotal} (> ₹10)
                     Platform profit: ₹${platformProfit}`);
 
-                // Execute this partial match
-                executionsThisRound.push({
+                bestExecutions.push({
                     yesTradeId: yesTrade._id,
                     noTradeId: noTrade._id,
                     amount: executionAmount,
@@ -158,20 +211,106 @@ const executeTrade = async(marketId, newTrade) => {
                     profit: platformProfit
                 });
 
-                totalExecutedValue += executionValue;
+                bestTotalValue += executionValue;
 
                 // Update remaining amounts
                 yesRemainingAmount -= executionAmount;
                 noRemainingAmount -= executionAmount;
-
-                // Update trades in arrays for next iteration
                 yesTrade.remainingAmount = yesRemainingAmount;
                 noTrade.remainingAmount = noRemainingAmount;
 
-                // If one trade is fully executed, break inner loop
                 if (yesRemainingAmount <= 0) break;
             }
         }
+    }
+
+    console.log(`📈 EXECUTION SUMMARY:
+        Found ${bestExecutions.length} profitable pairs
+        Total execution value: ₹${bestTotalValue}`);
+
+    // **EXECUTE ALL PROFITABLE PAIRS**
+    if (bestExecutions.length > 0) {
+        for (const execution of bestExecutions) {
+            const yesTradeToUpdate = await Trade.findById(execution.yesTradeId);
+            const noTradeToUpdate = await Trade.findById(execution.noTradeId);
+
+            // Update YES trade
+            const yesOriginalAmount = yesTradeToUpdate.amount;
+            const yesExecutedSoFar = yesTradeToUpdate.executedAmount || 0;
+            const yesNewExecuted = yesExecutedSoFar + execution.amount;
+
+            await Trade.findByIdAndUpdate(execution.yesTradeId, {
+                executePrice: execution.yesPrice,
+                executedAmount: yesNewExecuted,
+                status: yesNewExecuted >= yesOriginalAmount ? "EXECUTED" : "PARTIALLY_EXECUTED",
+                executedAt: new Date()
+            });
+
+            // Update NO trade
+            const noOriginalAmount = noTradeToUpdate.amount;
+            const noExecutedSoFar = noTradeToUpdate.executedAmount || 0;
+            const noNewExecuted = noExecutedSoFar + execution.amount;
+
+            await Trade.findByIdAndUpdate(execution.noTradeId, {
+                executePrice: execution.noPrice,
+                executedAmount: noNewExecuted,
+                status: noNewExecuted >= noOriginalAmount ? "EXECUTED" : "PARTIALLY_EXECUTED",
+                executedAt: new Date()
+            });
+
+            console.log(`✅ EXECUTED PAIR:
+                YES Trade ${execution.yesTradeId}: ${execution.amount} shares at ₹${execution.yesPrice}
+                NO Trade ${execution.noTradeId}: ${execution.amount} shares at ₹${execution.noPrice}
+                Platform profit: ₹${execution.profit}`);
+
+            // Emit live trade notifications
+            emitNewTrade(marketId, {
+                _id: yesTradeToUpdate._id,
+                option: "yes",
+                side: yesTradeToUpdate.side,
+                amount: execution.amount,
+                price: execution.yesPrice,
+                status: yesNewExecuted >= yesOriginalAmount ? "EXECUTED" : "PARTIALLY_EXECUTED",
+                executedAmount: yesNewExecuted,
+                user: yesTradeToUpdate.user,
+                timestamp: new Date(),
+                reason: "Partial execution matched"
+            });
+
+            emitNewTrade(marketId, {
+                _id: noTradeToUpdate._id,
+                option: "no",
+                side: noTradeToUpdate.side,
+                amount: execution.amount,
+                price: execution.noPrice,
+                status: noNewExecuted >= noOriginalAmount ? "EXECUTED" : "PARTIALLY_EXECUTED",
+                executedAmount: noNewExecuted,
+                user: noTradeToUpdate.user,
+                timestamp: new Date(),
+                reason: "Partial execution matched"
+            });
+        }
+
+        // Emit updated order book after all executions
+        emitOrderBookUpdate(marketId);
+        return true;
+    } else {
+        console.log(`📋 NO PROFITABLE PAIRS FOUND - All trades remain pending`);
+        
+        // Emit the new trade as pending
+        emitNewTrade(marketId, {
+            _id: newTrade._id,
+            option: newTrade.option,
+            side: newTrade.side,
+            amount: newTrade.amount,
+            price: newTrade.price,
+            status: "PENDING",
+            user: newTrade.user,
+            timestamp: newTrade.createdAt,
+            reason: "No profitable matches available"
+        });
+
+        return false;
     }
 
     // **EXECUTE PARTIAL MATCHES**
