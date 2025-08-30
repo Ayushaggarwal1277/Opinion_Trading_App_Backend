@@ -211,7 +211,7 @@ const executeTrade = async (marketId, newTrade) => {
             }
         }
 
-  emitOrderBookUpdate(marketId);
+    emitOrderBookUpdate(marketId, { type: 'refresh', trades: [] });
   return matches.length > 0;
 };
 
